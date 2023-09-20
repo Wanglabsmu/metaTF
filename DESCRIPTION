@@ -1,0 +1,22 @@
+Package: metaTF
+Type: Package
+Title: single-cell Activate Transcription Factor Regulon analysis tools
+Version: 0.1.1
+Author: guangjue tang,Puwen Tan 
+Maintainer: The package maintainer <yourself@somewhere.net>
+Description: More about what it does (maybe more than one line)
+    Use four spaces when indenting paragraphs within the Description.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.1.1
+Imports: methods,S4Vectors,data.table,dplyr
+Suggests: testthat, knitr, rmarkdown
+VignetteBuilder: knitr
+Depends: R (>= 3.5.0), SingleCellExperiment, GENIE3,
+        SummarizedExperiment, Seurat, fgsea, RcisTarget, scLink, ppcor,
+        purrr, dplyr, qvalue, jaccard, scater, AUCell, ROCR,
+        Radviz, cvTools, factoextra, glmnet, kSamples, pbapply,
+        progress, stringr, minet, reshape2
+NeedsCompilation: no
+Packaged: 2021-11-30 05:45:03 UTC; Wangdongsmu
