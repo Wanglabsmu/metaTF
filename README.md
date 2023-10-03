@@ -26,11 +26,11 @@ BiocManager::install(c("SingleCellExperiment", "GENIE3", "fgsea", "RcisTarget", 
 install.packages("./metaTF_0.1.9.tar.gz", repos = NULL, type = "source")
 ```
 <u>**Docker install***</u> 
-<u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF runs
+<u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF(previous name scATFR) runs
 
 ```{r}
-docker pull hobartjoe/metaTF
-conda activate metaTF_env
+docker pull hobartjoe/scATFR
+conda activate scATFR_env
 ```
 ## 2. Quick Start
 Firstly, we load TF-target network from local data set and import expression data: 
