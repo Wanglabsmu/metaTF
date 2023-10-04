@@ -11,25 +11,37 @@ The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A
 ```{r}
 conda create -n metaTF_env
 conda activate metaTF_env
-conda install -c conda-forge r-base=4.1.3 -y
+conda install -c conda-forge r-seurat -y
+conda install -c conda-forge r-ppcor r-cvtools r-factoextra r-glmnet r-ksamples r-progress r-arrow r-systemfonts r-textshaping r-cairo r-ragg r-devtools -y
+conda install -c bioconda bioconductor-summarizedexperiment -y
 R
 ```
 <u>**Run in R***</u> 
 
 ```{r}
-install.packages(c("Seurat", "ppcor", "cvTools", "factoextra", "glmnet", "kSamples", "progress", "arrow", "systemfonts", "textshaping", "Cairo", "ragg", "devtools", "Radviz", "jaccard", "scLink"))
-    
 install.packages("BiocManager")
-BiocManager::install(c("SingleCellExperiment", "GENIE3", "fgsea", "RcisTarget", "qvalue", "scater", "minet", "viper"))
+BiocManager::install("SingleCellExperiment")
+BiocManager::install("GENIE3")
+BiocManager::install("fgsea")
 
+BiocManager::install("RcisTarget")
+BiocManager::install("qvalue")
+BiocManager::install("scater")
+BiocManager::install("minet")
+BiocManager::install("viper")
 
-install.packages("./metaTF_0.1.9.tar.gz", repos = NULL, type = "source")
+install.packages("Radviz")
+install.packages("jaccard")
+
+install.packages("scLink")
+install.packages("./PIDC.tar.gz", repos = NULL, type = "source")
+install.packages("./scATFR_0.1.9.tar.gz", repos = NULL, type = "source")
 ```
 <u>**Docker install***</u> 
 <u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF(previous name scATFR) runs
 
 ```{r}
-docker pull hobartjoe/scATFR
+docker pull hobartjoe/scatfr
 conda activate scATFR_env
 ```
 ## 2. Quick Start
