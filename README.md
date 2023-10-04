@@ -35,7 +35,10 @@ install.packages("jaccard")
 
 install.packages("scLink")
 install.packages("./PIDC.tar.gz", repos = NULL, type = "source")
-install.packages("./scATFR_0.1.9.tar.gz", repos = NULL, type = "source")
+
+install.packages("devtools")
+library(devtools)
+install_github("wanglabsmu/metatf")
 ```
 <u>**Docker install***</u> 
 <u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF(previous name scATFR) runs
