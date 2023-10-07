@@ -68,12 +68,12 @@ head(GRN(atfr)[,1:5])
 After that, we filter the gene regulons using gene regulotory network:
 ```{r}
 atfr <- filterRegulons(x=atfr, ncores=6)
-plotRegulonReducedDim(object = atfr, alt_assay = "viper", dimred = "UMAP", colour_by="stage")
 ```
 Now, we evaluate the regulon activity in each single cell:
 ```{r}
 atfr <- regulonActivity(atfr, method="viper",ncores=6)
 atfr <- regulonUMAP(x = atfr)
+plotRegulonReducedDim(object = atfr, alt_assay = "viper", dimred = "UMAP", colour_by="stage")
 ```
 We can also get the cell-type specific regulons:
 ```{r}
@@ -88,7 +88,7 @@ We can compare the similarities between regulons and pathways:
 ```{r}
 data(Reactome_pathway)
 Reactome_mouse <- Reactome_pathway$mouse
-regulon_pathway <- inferRegulonFun(x = atfr, pathway_list = Reactome_mouse, ncores=6)
+regulon_pathway <- calcuModuleSimilar (x = atfr, pathway_list = Reactome_mouse,collapse_set=F, ncores=6)
 ```
 
 ### 1.2 Obtaining TFRs from DoRoThEA
