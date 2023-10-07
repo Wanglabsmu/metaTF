@@ -23,22 +23,17 @@ install.packages("BiocManager")
 BiocManager::install("SingleCellExperiment")
 BiocManager::install("GENIE3")
 BiocManager::install("fgsea")
-
 BiocManager::install("RcisTarget")
 BiocManager::install("qvalue")
 BiocManager::install("scater")
 BiocManager::install("minet")
 BiocManager::install("viper")
-
 install.packages("Radviz")
 install.packages("jaccard")
-
 install.packages("scLink")
-install.packages("./PIDC.tar.gz", repos = NULL, type = "source")
-
 install.packages("devtools")
 library(devtools)
-install_github("wanglabsmu/metatf")
+install_github("Wanglabsmu/metatf")
 ```
 <u>**Docker install***</u> 
 <u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF(previous name scATFR) runs
@@ -64,7 +59,7 @@ atfr <- metaTF(exp_data = expression_data, col_data = col_data, regulons = regul
 ```
 Next, we infer the Gene Regulatory Networks:
 ```{r}
-atfr <- inferGRNs(x = atfr, method="spearman", ncores=6)
+atfr <- inferGRNs(x = atfr, method="PUIC", ncores=6)
 ```
 To look for GRNs
 ```{r}
@@ -73,61 +68,28 @@ head(GRN(atfr)[,1:5])
 After that, we filter the gene regulons using gene regulotory network:
 ```{r}
 atfr <- filterRegulons(x=atfr, ncores=6)
+plotRegulonReducedDim(object = atfr, alt_assay = "viper", dimred = "UMAP", colour_by="stage")
 ```
 Now, we evaluate the regulon activity in each single cell:
 ```{r}
 atfr <- regulonActivity(atfr, method="viper",ncores=6)
+atfr <- regulonUMAP(x = atfr)
 ```
 We can also get the cell-type specific regulons:
 ```{r}
 #get one cell type specific
-EC_sig <- findCellTypeSignature(atfr, pos_clust="EC",diff_by="stage")
+EC_sig <- findCellTypeSignature(atfr, pos_clust="EC",clust_name="stage")
 #get all cell type specific
-all_sig <- findAllCTSRegulons(atfr, diff_by="stage",ncores=6)
+all_sig <- findAllCTSRegulons(atfr, clust_name="stage",ncores=6)
 head(all_sig)
 all_sig <- dplyr::tibble(all_sig)
 ```
 We can compare the similarities between regulons and pathways:
 ```{r}
-data(kegg_pathway)
-kegg_mouse <- kegg_pathway$mouse
-regulon_pathway <- inferRegulonFun(x = atfr, pathway_list = kegg_mouse, ncores=6)
+data(Reactome_pathway)
+Reactome_mouse <- Reactome_pathway$mouse
+regulon_pathway <- inferRegulonFun(x = atfr, pathway_list = Reactome_mouse, ncores=6)
 ```
-
-
-
-
-
-
-
-
-
-## 1. Identifying functional TFRs
-Transcription factor regulons (TFRs) are a collection of transcription factors and their targets. Here we can obtain functional TFRs by combine the TF-Target binding information with gene regulatory network(GRN).
-
-### 1.1 Infering TFRs based on gene regulatory network(GRN) and cis-Target information
-GRN identification is the first step for TFR analysis, here we integrated several common used methods for GRN analysis
-
-#### 1.2.1 Infering GRN from gene expression data
-Here we integered 5 methods to inferring GRNs from single-cell RNA sequencing data. You can using `inferGRNs()` to perform GRN identification with data `matrix` or `data.frame`. we even support servel types of objects out from common used software (eg. objects from Seurat, SingleCellExprentment, Monocle, ExpressionSet). For example:
-```{r}
-data(exampleTFs)
-data(mouseExp)
-grns <- inferGRNs(x = mouseExp, method = "sclink", use_regulator = exampleTFs, ncores=2)
-
-```
-For single-cell RNA sequencing data with time-stamped, we suggest using `SINCERITIES`. Besides, we also reorganized the scripts from `SINCERITIES` package and implement a method names `run_sincerities()` to conveniently perform GRN inference. For more usage of `run_sincerities()`, please type `?run_sincerities()`.
-
-#### 1.2.2 Identifying TFR based on GRN and cis-regulation information
-
-```{r}
-mmu_motifRanking <- RcisTarget::importRankings("D:/HSC_Autophagy/Markdown/1.ATFinder/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
-mmu_motifAnnotations <- data.table::fread("D:/HSC_Autophagy/Markdown/1.ATFinder/motifs-v9-nr.mgi-m0.001-o0.0.tbl", sep="\t")
-
-tfrs <- getRegulons(x = grns[1:10,], motif_rank = mmu_motifRanking, motif_tf_anno = mmu_motifAnnotations, method="GSEA", ncores=5)
-
-```
-
 
 ### 1.2 Obtaining TFRs from DoRoThEA
 Alternatively, you can also simply obtain these data from `DoRoThEA` package. The TFRs for human and mouse were deposited in latest version (1.3.2) of [dorothea](https://github.com/saezlab/dorothea) package, and can be directly extracted. Please noticed that for the standard analysis using normal tissues, `dorothea` suggest using regulons data in `dorothea_hs/dorothea_mm`, in which the tissue specific gene expression data from the GTEx portal. For abnormal tissues, the `dorothea_hs_pancancer/dorothea_mm_pancancer` is better, in which the gene expression data were  inferred from the TCGA program.
@@ -137,17 +99,11 @@ Alternatively, you can also simply obtain these data from `DoRoThEA` package. Th
 #install.packages("devtools")
 #devtools::install_github("saezlab/dorothea")
 library(dorothea)
-#human_norm_regulons <- get(data("dorothea_hs", package = "dorothea"))
-#head(human_norm_regulons)
 mouse_regulons <- get(data("dorothea_mm", package = "dorothea"))
 head(mouse_regulons)
 human_abnorm_regulons <- get(data("dorothea_hs_pancancer", package = "dorothea"))
-head(human_norm_regulons)
-#mouse_abnorm_regulons <- get(data("dorothea_mm_pancancer", package = "dorothea"))
-#head(mouse_abnorm_regulons)
-
+head(human_abnorm_regulons)
 tfrs <- tfrFromDoRoThEA(mouse_regulons, levels=c("A","B","C"))
-
 ```
 Typically, there are four columns in TFRs data:
 
@@ -159,59 +115,14 @@ Typically, there are four columns in TFRs data:
 
 **mor**: the mode of regulation. `1` stands for activation and `-1` stands for repression.
 
-## 2. Assessing TFR activity at single-cell level
-
-```{r}
-tfr_score <- regulonActivity(mouseExp, gene_list = tfrs, method = "viper")
-```
-
-
-### 2.1 VIPER
-
-### 2.2 AUCell
-
-### 2.3 GSVA ssGSEA
-
-## 3. Dimensionality reduction analysis based on TFR
-
-### 3.1 PCA tSNE and UMAP
-
-### 3.2 Driven TFR identification
-
-## 4. Pseudotime analysis based on TFR
-
-## 5. Cell-type specific TFR analysis
-
-```{r}
-css_res <- calcCSS(mat = tfr_score, cell_anno = col_data, pos_clust = "T1_pre_HSC",nperm = 1000)
-
-all_sig_css <- findAllCTSRegulons(tfr_score, cell_anno = col_data, css=0.3)
-
-```
-
-### 5.1 Differential TFR 
-
-### 5.2 differential TFR based on pseudotime
-
-
-## 6. Motif analysis of Cell-type specific TFR
-
-
-## 7. TFR and pathway comparison analysis
-
-```{r}
-kegg_pathway <- fgsea::gmtPathways(gmt.file = "c2.cp.kegg.v7.4.symbols.gmt")
-
-```
-
 ## Case Study
 
-### 7. CASE1: Characterisation of cell-type specific transcription factor regulons (TFRs) during HSC formation.
+### 2. CASE1: Characterisation of cell-type specific transcription factor regulons (TFRs) during HSC formation.
 In this case, we firstly performed dimension reduction and pseudotime analysis based on [Monocle3](https://cole-trapnell-lab.github.io/monocle3/) using mouse embryonic hematopoietic stem cells (HSCs) formation data ([Fan zhou, 2016](https://www.nature.com/articles/nature17997) and [Jie Zhou, 2018](https://doi.org/10.1016/j.stem.2018.11.023)). Then, we performed transcription factor regulons (TFRs) analysis such as cell-type specific TFRs identification and TFR-pathway similarity analysis using **metaTF**. Finally, we showed the visualization of the above results.
 
-#### 7.1 Pseudotime analysis using monocle3
+#### 2.1 Pseudotime analysis using monocle3
 
-#### 7.1.1 Loading the data and create `cds` object
+#### 2.1.1 Loading the data and create `cds` object
 The row names of `expression_matrix` is gene symbols and the column names of `expression_matrix` is cell identifier. The `expression_colData` include three columns: sample, stage and tissue.
 ```{r}
 library(monocle3)
@@ -223,7 +134,7 @@ expression_colData <- readRDS(system.file("extdata", "mouse_HSC_formation_colDat
 cds <- new_cell_data_set(expression_data = expression_data,
                         cell_metadata = expression_colData)
 ```
-#### 7.1.2 pre-process and dimension reduction
+#### 2.1.2 pre-process and dimension reduction
 Then, we perform normalization and dimension reduction with object `cds`.
 ```{r}
 #Normalize and pre-process the data
@@ -232,7 +143,7 @@ cds <- preprocess_cds(cds, num_dim = 50, method = "PCA")
 cds <- reduce_dimension(cds,reduction_method = "UMAP", preprocess_method = "PCA")
 #plot_cells(cds, reduction_method = "UMAP", color_cells_by="stage")
 ```
-#### 7.1.3 Pseudotime analysis
+#### 2.1.3 Pseudotime analysis
 ```{r}
 # Cluster the cells
 cds <- cluster_cells(cds)
@@ -252,7 +163,7 @@ head(colData(cds))
 ```
 Now, we can see pseudotime information in colData of `cds`.
 
-#### 7.2   
+#### 2.2   
 
 ```{r}
 data(dorothea_regulons)
