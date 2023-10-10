@@ -9,6 +9,8 @@ The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A
 <u>**Conda install***</u> 
 
 ```{r}
+git clone https://github.com/Wanglabsmu/metaTF.git
+
 conda create -n metaTF_env
 conda activate metaTF_env
 conda install -c conda-forge r-seurat -y
@@ -31,6 +33,9 @@ BiocManager::install("viper")
 install.packages("Radviz")
 install.packages("jaccard")
 install.packages("scLink")
+
+install.packages("./PIDC.tar.gz", repos = NULL, type = "source")
+
 install.packages("devtools")
 library(devtools)
 install_github("Wanglabsmu/metatf")
