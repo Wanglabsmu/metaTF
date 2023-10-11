@@ -9,7 +9,7 @@ The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A
 <u>**Conda install***</u> 
 
 ```{r}
-git clone https://github.com/Wanglabsmu/metaTF.git
+wget https://github.com/Wanglabsmu/metaTF/blob/main/PIDC.tar.gz
 
 conda create -n metaTF_env
 conda activate metaTF_env
