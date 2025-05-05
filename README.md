@@ -5,18 +5,21 @@ output: html_notebook
 Transcription factor regulon (TFR) 
 
 ## 1. Overview
-The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A**</u>ctivate <u>**T**</u>ranscription <u>**F**</u>actor <u>**R**</u>egulon analysis, which combining the transcription factor regulatory information with single-cell gene expression data and evaluating the transcription factor regulon activities, identifying cell-type specific regulons and assessing the similarities between regulons and pathways. 
+The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A**</u>ctivate <u>**T**</u>ranscription <u>**F**</u>actor <u>**R**</u>egulon analysis, which combining the transcription factor regulatory information with single-cell gene expression data and evaluating the transcription factor regulon activities, identifying cell-type specific regulons and assessing the similarities between regulons and pathways. In fact, **scATFR** was the original name used during the early development phase of what is now known as the metaTF package. To maintain consistency and continuity, we continue to use scATFR as the package name within this software suite.
 <u>**Conda install***</u> 
 
 ```{r}
-wget https://github.com/Wanglabsmu/metaTF/blob/main/PIDC.tar.gz
-
-conda create -n metaTF_env
+conda create -n metaTF_env -y
 conda activate metaTF_env
-conda install -c conda-forge r-seurat -y
+conda install -c conda-forge r-seurat=4.3 -y
 conda install -c conda-forge r-ppcor r-cvtools r-factoextra r-glmnet r-ksamples r-progress r-arrow r-systemfonts r-textshaping r-cairo r-ragg r-devtools -y
 conda install -c bioconda bioconductor-summarizedexperiment -y
-R
+conda install bioconda::bioconductor-fgsea -y
+conda install bioconda::bioconductor-rcistarget -y
+
+wget https://github.com/Wanglabsmu/metaTF/releases/download/v0.1.9/PIDC.tar.gz
+wget https://github.com/Wanglabsmu/metaTF/releases/download/v0.1.9/scATFR_0.1.9.tar.gz
+tar -zxvf scATFR_0.1.9.tar.gz
 ```
 <u>**Run in R***</u> 
 
@@ -24,8 +27,6 @@ R
 install.packages("BiocManager")
 BiocManager::install("SingleCellExperiment")
 BiocManager::install("GENIE3")
-BiocManager::install("fgsea")
-BiocManager::install("RcisTarget")
 BiocManager::install("qvalue")
 BiocManager::install("scater")
 BiocManager::install("minet")
@@ -35,10 +36,7 @@ install.packages("jaccard")
 install.packages("scLink")
 
 install.packages("./PIDC.tar.gz", repos = NULL, type = "source")
-
-install.packages("devtools")
-library(devtools)
-install_github("Wanglabsmu/metatf")
+install.packages("./scATFR_0.1.9.tar.gz", repos = NULL, type = "source")
 ```
 <u>**Docker install***</u> 
 <u>**A**</u>s a recommendation, we recommend using docker to install the environment in which metaTF(previous name scATFR) runs
@@ -50,21 +48,20 @@ conda activate scATFR_env
 ## 2. Quick Start
 Firstly, we load TF-target network from local data set and import expression data: 
 ```{r}
-library(metaTF)
-#load TF-target data 
-data(dorothea_regulons)
-regulons <- dfToList(df = dorothea_regulons$mm_regulons, tf_col = "tf",target_col = "target")
-#load gene expression data and colData
-expression_data <- readRDS(system.file("extdata", "mouse_HSC_formation_expression.rds", package = "metaTF"))
-col_data <- readRDS(system.file("extdata", "mouse_HSC_formation_colData.rds", package = "metaTF"))
+setwd("./scATFR")
+library(PIDC)
+library(scATFR)
+exp_data <- readRDS("./inst/extdata/mouse_HSC_formation_expression.rds")
+col_metadata <- readRDS("./inst/extdata/mouse_HSC_formation_colData.rds")
+row.names(col_metadata) <- col_metadata$sample
 ```
 Then, we create the `atfr` object:
 ```{r}
-atfr <- metaTF(exp_data = expression_data, col_data = col_data, regulons = regulons)
+atfr <- scATFR(exp_data = exp_data,col_data = col_metadata)
 ```
 Next, we infer the Gene Regulatory Networks:
 ```{r}
-atfr <- inferGRNs(x = atfr, method="PUIC", ncores=6)
+atfr <- inferGRNs(x = atfr, method="pidc",ncores=6)
 ```
 To look for GRNs
 ```{r}
