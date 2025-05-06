@@ -1,0 +1,193 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1. load data
+```{r}
+path <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/exp_data/download_data"
+cells <- list.files(path)
+
+read_exp <- function(x,path){
+  exp_data <- suppressWarnings(data.table::fread(file.path(path,x),sep="\t"))
+  exp_data
+}
+
+all_exp_data <- pbapply::pblapply(X = cells, FUN = read_exp,path=path)
+names(all_exp_data) <- cells
+
+
+all_exp_mat <- purrr::reduce(.x = all_exp_data,.f = full_join,by=c("V1"="V1"))
+all_exp_mat[is.na(all_exp_mat)] <- 0
+colnames(all_exp_mat)[1] <- "gene_name"
+fwrite(all_exp_mat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/exp_data/all_counts_mat.tsv.gz",sep="\t")
+
+sample2stage <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/exp_data/filter_sample_annotation.txt",sep="\t",header=T,row.names=1)
+overlap_cells <- intersect(row.names(sample2stage), colnames(all_exp_mat))
+exp_mat_filter <- all_exp_mat %>% select(c("gene_name",overlap_cells))
+exp_mat_num <- as.data.frame(exp_mat_filter[,-1])
+row.names(exp_mat_num) <- exp_mat_filter$gene_name
+exp_mat_filter2 <- exp_mat_filter[apply(exp_mat_num,1,function(x){length(x[x>0])>=10}),]
+fwrite(exp_mat_filter2,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/exp_data/counts_mat.tsv.gz",sep="\t")
+
+exp_mat <- as.matrix(exp_mat_filter2[,-1])
+row.names(exp_mat) <- exp_mat_filter2$gene_name
+
+col_metadata <- sample2stage[,3:5]
+atfr <- scATFR(exp_data = exp_mat,col_data = col_metadata)
+atfr <- scater::logNormCounts(atfr)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/objects/atfr_init.rds")
+
+```
+
+
+#### 1.2 perform GRN analysis
+
+```{r}
+library(PIDC)
+atfr <- inferGRNs(x = atfr, method="pidc",use_assay="logcounts", ncores=6)
+saveRDS(GRN(atfr,"pidc"),"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/GRNs/pidc_GRN.rds")
+pidc_nets <- matToNet(weightMat = GRN(atfr,"pidc"),cutoff = 0)
+saveRDS(pidc_nets,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/GRNs/pidc_regulons.rds")
+
+```
+
+
+#### 1.3 integrate GRNs 
+
+```{r}
+mouse_tfs <- intersect(TF_Symbols$mouse,row.names(atfr))
+blood_nets <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_strict_network.txt.gz",sep="\t",header=T) %>% filter(tf %in% mouse_tfs)
+pidc_nets <- pidc_nets %>% filter(regulator %in% mouse_tfs)
+regulon_nets <- integraNets(grnNets = list(pidc_nets, blood_nets), norm_weight = T,
+                            max_target_num=2000, min_target_num = 100, 
+                            join_type = "full", return_sig = T, maxInter = 5, 
+                            ncores = 6)
+                        
+interged_regulons <- dfToList(regulon_nets)
+length(interged_regulons)
+```
+
+
+#### 1.3 filtering and calculating active GRNs 
+
+```{r}
+atfr <- filterRegulons(x = atfr, gene_list = interged_regulons, maxSize=500, minSize=5)
+atfr <- regulonActivity(x = atfr, method="viper", use_assay="logcounts")
+active_mat <- assay(altExp(atfr,"viper"))
+write.table(active_mat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/tf_regulon_active_mat.txt",sep="\t",quote=F)
+
+atfr <- regulonActivity(x = atfr, method="aucell", use_assay="logcounts")
+active_mat2 <- assay(altExp(atfr,"aucell"))
+write.table(active_mat2,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/tf_regulon_active_mat_auell.txt",sep="\t",quote=F)
+
+atfr <- regulonActivity(x = atfr, method="ssgsea", use_assay="logcounts")
+active_mat3 <- assay(altExp(atfr,"ssgsea"))
+write.table(active_mat3,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/tf_regulon_active_mat_ssgsea.txt",sep="\t",quote=F)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/objects/atfr.rds")
+
+```
+
+#### 2.1 create sce object
+
+```{r}
+library(scater)
+library(scran)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/objects/atfr.rds")
+tf_gene <- intersect(TF_Symbols$mouse,row.names(atfr))
+exp_sce <- atfr[tf_gene,]
+exp_sce <- scater::logNormCounts(exp_sce)
+colData(exp_sce) <- colData(atfr)
+#colData(exp_sce)$Cluster <- reLevel(vect = colData(exp_sce)$Cluster)
+exp_sce <- scater::runPCA(x=exp_sce,subset_row=tf_gene,exprs_values = "logcounts") 
+plotReducedDim(exp_sce, dimred="PCA",colour_by = "Cluster")
+exp_sce <- scater::runTSNE(x = exp_sce,subset_row=tf_gene,exprs_values = "logcounts")
+plotReducedDim(exp_sce, dimred="TSNE",colour_by = "Cluster")
+#exp_sce  <- scater::runUMAP(x = exp_sce, subset_row=tf_gene)
+#plotReducedDim(exp_sce , dimred="UMAP",colour_by = "Cluster")
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/reducedDim/",recursive = T)
+saveRDS(exp_sce,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/reducedDim/01.1_TF_exp_sce.rds")
+
+#--- active score
+act_sce <- SingleCellExperiment::SingleCellExperiment(list(active_score=assay(altExp(atfr,"viper"))))
+colData(act_sce) <- colData(atfr)
+#colData(act_sce)$stage <- reLevel(vect = colData(act_sce)$stage)
+act_sce <- scater::runPCA(x=act_sce,subset_row=tf_gene,exprs_values="active_score") 
+plotReducedDim(act_sce, dimred="PCA",colour_by = "Cluster")
+act_sce <- scater::runTSNE(x = act_sce,subset_row=tf_gene,exprs_values="active_score")
+plotReducedDim(act_sce, dimred="TSNE",colour_by = "Cluster")
+#act_sce <- scater::runUMAP(x = act_sce, subset_row=tf_gene,exprs_values="active_score")
+#plotReducedDim(act_sce, dimred="UMAP",colour_by = "Cluster")
+saveRDS(act_sce,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/reducedDim/01.2_TF_act_sce.rds")
+
+```
+
+
+##### 2.1 AEC vs HEC TF gene and TF regulons at expression and activate level
+
+```{r}
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/reducedDim/01.1_TF_exp_sce.rds")
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_CR/viper/reducedDim/01.2_TF_act_sce.rds")
+
+assay(act_sce,i = "normalized_score") <- t(apply(assay(act_sce),1,function(x){10*(x-min(x))/(max(x)-min(x))}))
+
+#assay(act_sce,"logcounts") <- assay(exp_sce,"logcounts")[row.names(assay(act_sce,"active_score")),]
+col_data <- colData(exp_sce)
+library(scran)
+#---early AEC
+
+exp_sce_earlyAEC_HEC <- findMarkers(x = exp_sce,groups=col_data$Cluster, restrict=c("earlyAEC","HEC"))$HEC
+exp_sce_earlyAEC_HEC <- as.data.frame(exp_sce_earlyAEC_HEC)
+exp_sce_earlyAEC_HEC_diff <- exp_sce_earlyAEC_HEC %>% dplyr::filter(FDR<0.05)
+exp_sce_earlyAEC_HEC_not_diff <- exp_sce_earlyAEC_HEC %>% dplyr::filter(FDR>0.2)
+exp_sce_earlyAEC_HEC_up <- exp_sce_earlyAEC_HEC_diff %>% filter(logFC.earlyAEC>=1)
+exp_sce_earlyAEC_HEC_down <- exp_sce_earlyAEC_HEC_diff %>% filter(logFC.earlyAEC<= -1)
+
+
+act_sce_earlyAEC_HEC <- findMarkers(x = act_sce,groups=col_data$Cluster, restrict=c("earlyAEC","HEC"), assay.type = "normalized_score")$HEC
+act_sce_earlyAEC_HEC <- as.data.frame(act_sce_earlyAEC_HEC)
+act_sce_earlyAEC_HEC_not_diff <- act_sce_earlyAEC_HEC %>% dplyr::filter(FDR>0.2)
+act_sce_earlyAEC_HEC_diff <- act_sce_earlyAEC_HEC %>% dplyr::filter(FDR<0.05)
+act_sce_earlyAEC_HEC_up <- act_sce_earlyAEC_HEC_diff %>% filter(logFC.earlyAEC>=1)
+act_sce_earlyAEC_HEC_down <- act_sce_earlyAEC_HEC_diff %>% filter(logFC.earlyAEC<= -1)
+
+earlyAEC_HEC_act_up_only <- intersect(row.names(act_sce_earlyAEC_HEC_up), union(row.names(exp_sce_earlyAEC_HEC_not_diff), row.names(exp_sce_earlyAEC_HEC_down)))
+
+#---late AEC
+exp_sce_lateAEC_HEC <- findMarkers(x = exp_sce,groups=col_data$Cluster, restrict=c("lateAEC","HEC"))$HEC
+exp_sce_lateAEC_HEC <- as.data.frame(exp_sce_lateAEC_HEC)
+exp_sce_lateAEC_HEC_diff <- exp_sce_lateAEC_HEC %>% dplyr::filter(FDR<0.05)
+exp_sce_lateAEC_HEC_not_diff <- exp_sce_lateAEC_HEC %>% dplyr::filter(FDR>0.2)
+exp_sce_lateAEC_HEC_up <- exp_sce_lateAEC_HEC_diff %>% filter(logFC.lateAEC>=1)
+exp_sce_lateAEC_HEC_down <- exp_sce_lateAEC_HEC_diff %>% filter(logFC.lateAEC<= -1)
+
+
+act_sce_lateAEC_HEC <- findMarkers(x = act_sce,groups=col_data$Cluster, restrict=c("lateAEC","HEC"), assay.type = "normalized_score")$HEC
+act_sce_lateAEC_HEC <- as.data.frame(act_sce_lateAEC_HEC)
+act_sce_lateAEC_HEC_not_diff <- act_sce_lateAEC_HEC %>% dplyr::filter(FDR>0.2)
+act_sce_lateAEC_HEC_diff <- act_sce_lateAEC_HEC %>% dplyr::filter(FDR<0.05)
+act_sce_lateAEC_HEC_up <- act_sce_lateAEC_HEC_diff %>% filter(logFC.lateAEC>=1)
+act_sce_lateAEC_HEC_down <- act_sce_lateAEC_HEC_diff %>% filter(logFC.lateAEC<= -1)
+
+lateAEC_HEC_act_up_only <- intersect(row.names(act_sce_lateAEC_HEC_up), union(row.names(exp_sce_lateAEC_HEC_not_diff),row.names(exp_sce_lateAEC_HEC_down)))
+
+oo <- Reduce(intersect,list(earlyAEC_HEC_act_up_only,lateAEC_HEC_act_up_only,i))
+early_o <- intersect(earlyAEC_HEC_act_up_only,i)
+late_o <- intersect(lateAEC_HEC_act_up_only,i)
+
+o <- oo
+o <- setdiff(early_o, oo)
+o <- setdiff(late_o, oo)
+
+ncols <- round(sqrt(length(o)))+1
+p1 <- plotExpression(object = exp_sce,features = o,x = "Cluster", colour_by = "Cluster", exprs_values = "logcounts", ncol = ncols, point_size=0.01)
+p2 <- plotExpression(object = act_sce,features = o,x = "Cluster", colour_by = "Cluster",exprs_values = "active_score", ncol = ncols, point_size=0.01)
+p1+p2
+
+ggsave(filename ="tf_and_tf_regulons_active_matrix_similarity.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/figure",
+       width = 1000, height =500, dpi = 600, limitsize = FALSE, units ="mm")
+saveRDS(list(exp_sce_AEC_HEC, act_sce_AEC_HEC),"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/AEC_HEC/exp_act_diff_test.rds")
+```
+
+

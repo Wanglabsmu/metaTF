@@ -1,0 +1,353 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/20"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="D:/HSC_Autophagy/Markdown/3.scATFR/scATFR") 
+```
+
+#### 1.1 filter expression data
+```{r}
+library(Seurat)
+WT_matrix <- Seurat::Read10X("../ext_data/Batf3_KO/raw_data/WT/")
+WT_exp <- WT_matrix$`Gene Expression`
+colnames(WT_exp) <- paste("WT_",colnames(WT_exp),sep="")
+WT <- CreateSeuratObject(counts = WT_exp, project = "WT")
+
+Batf3_matrix <- Seurat::Read10X("../ext_data/Batf3_KO/raw_data/Batf3_KO/")
+Batf3_exp <- Batf3_matrix$`Gene Expression`
+colnames(Batf3_exp) <- paste("Batf3_KO_",colnames(Batf3_exp),sep="")
+Batf3 <- CreateSeuratObject(counts = Batf3_exp, project = "Batf3_KO")
+Batf3_KO <- merge(x = WT, y=Batf3, project = "Batf3_KO")
+
+Batf3_KO[["percent.mt"]] <- PercentageFeatureSet(Batf3_KO, pattern = "^mt-")
+head(Batf3_KO@meta.data, 5)
+
+plot1 <- FeatureScatter(Batf3_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(Batf3_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(Batf3_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+Batf3_KO <- subset(Batf3_KO, subset = nFeature_RNA > 1000 & nFeature_RNA < 5000 & percent.mt < 10)
+VlnPlot(Batf3_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+Batf3_KO <- NormalizeData(Batf3_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+Batf3_KO <- FindVariableFeatures(Batf3_KO, selection.method = "vst", nfeatures = 2000)
+Batf3_KO <- ScaleData(Batf3_KO, use.umi=T)
+Batf3_KO <- RunPCA(Batf3_KO, features = VariableFeatures(object = Batf3_KO))
+DimPlot(Batf3_KO, reduction = "pca")
+Batf3_KO <- FindNeighbors(Batf3_KO, dims = 1:50)
+Batf3_KO <- FindClusters(Batf3_KO)
+Batf3_KO <- RunTSNE(object = Batf3_KO, dims.use = 1:50)
+DimPlot(Batf3_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(Batf3_KO, reduction = "tsne",features = "Batf3",split.by = "orig.ident")
+FeaturePlot(Batf3_KO, reduction = "tsne",features = "Nkx2-1")
+
+Batf3_KO <- RunUMAP(Batf3_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(Batf3_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Batf3_KO, reduction = "umap",features = "Batf3",split.by = "orig.ident")
+
+Batf3_KO_counts <- as.matrix(Seurat::GetAssayData(Batf3_KO, assay = "RNA", slot = "counts"))
+saveRDS(Batf3_KO_counts,"../ext_data/Batf3_KO/raw_data/Batf3_KO_cell_counts.rds")
+saveRDS(Batf3_KO@meta.data,"../ext_data/Batf3_KO/raw_data/Batf3_KO_cell_metadata.rds")
+
+
+```
+#### 1.2 quality control
+
+```{r}
+batf3_exp <- readRDS("../ext_data/Batf3_KO/raw_data/Batf3_KO_cell_counts.rds")
+batf3_col <- readRDS("../ext_data/Batf3_KO/raw_data/Batf3_KO_cell_metadata.rds")
+
+sce_epi <- SingleCellExperiment(assays=list(counts=batf3_exp))
+colData(sce_epi) <- DataFrame(batf3_col)
+sce_epi <- logNormCounts(sce_epi)
+top.sce_epi <- getTopHVGs(sce_epi, n=5000)
+sce_epi <- runPCA(sce_epi, subset_row=top.sce_epi) 
+plotReducedDim(sce_epi, dimred="PCA",colour_by = "orig.ident")
+g <- buildSNNGraph(sce_epi, use.dimred="PCA")
+cluster <- igraph::cluster_walktrap(g)$membership
+colLabels(sce_epi) <- factor(cluster)
+sce_epi <- runTSNE(sce_epi, dimred="PCA")
+plotReducedDim(sce_epi, dimred="TSNE",colour_by = "orig.ident")
+plotReducedDim(sce_epi, dimred="TSNE",colour_by = "Batf3")
+saveRDS(sce_epi,"../ext_data/Batf3_KO/objects/Nkx2_1_KO_sce_quality_control.rds")
+
+batf3_counts <- batf3_exp['Batf3',]
+batf3_col$Batf3 <- batf3_counts[row.names(batf3_col)]
+batf3_col$orig.ident <- factor(batf3_col$orig.ident,levels=c("WT","Batf3"))
+library(ggplot2)
+p <- ggplot(batf3_col,aes(x=orig.ident,y=log2(Batf3+1),fill=orig.ident))+
+  geom_violin(position = "dodge", na.rm = TRUE, scale = "width",width = 0.9)+
+  geom_boxplot(width=0.25,fill="white", size=0.2,outlier.colour=NA, alpha = 0.8)
+p
+
+```
+
+
+#### 1.3 infer GRNs 
+```{r}
+library(scATFR)
+batf3_exp <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/raw_data/Batf3_KO_cell_counts.rds")
+col_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/raw_data/Batf3_KO_cell_metadata.rds")
+batf3_exp <- batf3_exp[apply(batf3_exp,1,function(x){length(x[x>0])>=10}),]
+
+TF_genes <- intersect(TF_Symbols$mouse,row.names(batf3_exp))
+atfr <- scATFR(exp_data = batf3_exp, col_data=col_data)
+atfr@metadata$scATFR@metadata[["TFs"]] <- TF_genes
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/objects/Batf3_KO_atfr_init.rds")
+
+PIDC_GRN <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/PIDC_GRN.rds")
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/objects/Batf3_KO_atfr_init.rds")
+atfr <- scater::logNormCounts(atfr)
+atfr <- inferGRNs(atfr, method="pcor",use_assay="logcounts")
+
+GRN(atfr,"pidc") <- PIDC
+
+
+#------for server
+library(scATFR)
+library(PIDC)
+atfr <- readRDS("Batf3_KO_atfr_init.rds")
+atfr <- inferGRNs(x = atfr, method="pcor")
+saveRDS(atfr,"PCOR_GRN.rds")
+atfr <- inferGRNs(x = atfr, method="genie3",use_regulator=atfr@metadata$scATFR@metadata[["TFs"]], ncores=8)
+
+for(i in c("pcor","sclink")){
+  st <- Sys.time()
+  GRN <- inferGRNs(x = exp_mat, method = i)
+  diff_time <- Sys.time()-st
+  time_up[[i]] <- diff_time
+  saveRDS(GRN,paste("/media/hobart/s4T2/tpw/4.PIDC/GRNs/batf3_KO/GRN_",i,".rds",sep=""))
+}
+```
+
+
+
+### 2. regulon activity
+```{r}
+
+batf3_exp <- readRDS("/media/hobart/s4T2/tpw/4.PIDC/ext_data/Batf3_KO_cell_counts.rds")
+PIDC_batf3 <- PIDC::PIDC(expMat = batf3_exp,exp_percent = 0.05,ncores = 30)
+
+atfr <- readRDS("/media/hobart/s4T2/tpw/4.PIDC/ext_data/Batf3_KO_atfr_init.rds")
+atfr <- scater::logNormCounts(atfr)
+atfr <- inferGRNs(atfr, method="pcor",use_assay="logcounts")
+saveRDS(atfr,"/media/hobart/s4T2/tpw/4.PIDC/ext_data/Batf3_KO_pcor_atfr.rds")
+
+atfr <- inferGRNs(x = atfr, method="genie3", use_regulator=c("Batf3","Runx1"), ncores=16)
+saveRDS(atfr,"/media/hobart/s4T2/tpw/4.PIDC/GRNs/batf3_KO/Batf3_KO_genie3_atfr.rds")
+
+```
+
+#### 3.3 regulon activity
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/Batf3_KO_genie3_atfr.rds")
+atfr <- scater::logNormCounts(atfr)
+
+PIDC_GRN <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/PIDC_GRN.rds")
+GRN(atfr,"pidc") <- PIDC_GRN
+PIDC_regulons <- PIDC::matToNet(weightMat = PIDC_GRN,cutoff = 0)
+saveRDS(PIDC_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/PIDC_aracne_net.rds")
+PIDC_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/PIDC_aracne_net.rds")
+PIDC_regulons <- PIDC_regulons %>% filter(regulator=="Batf3")
+#saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/objects/atfr.rds")
+Batf3_regulon <- split(as.character(PIDC_regulons$target),as.character(PIDC_regulons$regulator))
+
+PIDC_GRN <- as.matrix(GRN(atfr,"pidc"))
+
+Batf3_pidc_grn <- PIDC_GRN["Batf3",]
+Batf3_pidc_grn_tab <- data.frame(tf=rep('Batf3',length(Batf3_pidc_grn)),target =names(Batf3_pidc_grn), weight = Batf3_pidc_grn)
+
+mu_regulon <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/pantissue_merged_filter_network.txt.gz",sep="\t",header=T)
+
+Batf3_mu_regulon <- mu_regulon %>% filter(tf=="Batf3")
+
+Batf3_merge_net <- integraNets(grnNets = list(Batf3_pidc_grn_tab, Batf3_mu_regulon), norm_weight = T, join_type = "full", min_target_num = 50, max_target_num = 2000,return_sig = T,maxInter = 5)
+merge_PIDC_regulon <- dfToList(Batf3_merge_net)
+
+atfr <- regulonActivity(x = atfr,gene_list = Batf3_regulon, method = "viper",use_assay="logcounts")
+actmat <- assay(altExp(atfr,"viper"))
+tapply(actmat[1,],colData(atfr)[names(actmat[1,]),'orig.ident'],mean)
+
+merge_PIDC_viper <- get_perf(x = atfr, gene_list = merge_PIDC_regulon, grn_method = "pidc", 
+                             act_method = "ssgsea", maxSize = 200,filter = F,plot_f=F)
+
+merge_PIDC_aucell <- get_perf(x = atfr, gene_list = merge_PIDC_regulon, grn_method = "pidc",act_method = "aucell", maxSize = 200,filter = T)
+
+merge_PIDC_ssgsea <- get_perf(x = atfr, gene_list = merge_PIDC_regulon, grn_method = "pidc", act_method = "ssgsea", maxSize = 200,filter=T)
+
+```
+
+##### 3.3 regulon filter
+```{r}
+get_perf <- function(x,
+                     gene_list,
+                     grn_method=c("pcor","genie3","sclink","pidc"),
+                     filter=TRUE,
+                     act_method = c("viper", "aucell", "ssgsea"),
+                     plot_f=TRUE,
+                     maxSize=500){
+  grn_method <- match.arg(grn_method)
+  act_method <- match.arg(act_method)
+  if(filter){
+    x <- filterRegulons(x = x, use_grn=grn_method, gene_list=gene_list, maxSize=maxSize)
+    x <- regulonActivity(x, method=act_method)
+  }else{
+    x <- regulonActivity(x, gene_list=gene_list, method=act_method)
+  }
+  mat <- assay(altExp(x, e = act_method))
+  labels <- colData(x)[['orig.ident']]
+  names(labels) <- row.names(colData(x))
+  label <- ifelse(labels=="WT",1,-1)
+  prediction <- mat[1,names(labels)]
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc_value <- perf@y.values[[1]]
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc_value,length(perf@x.values[[1]])),
+                        GRNs = rep(grn_method,length(perf@x.values[[1]])),
+                        Activity = rep(act_method, length(perf@x.values[[1]])),
+                        withFilter = rep(filter,length(perf@x.values[[1]])))
+  plot_frm <- as.data.frame(colData(x))
+  plot_frm$activity <- mat[1,row.names(plot_frm)]
+  p <- ggplot2::ggplot(data = plot_frm,mapping = aes(x = orig.ident,y=activity))+
+    geom_jitter()
+  if(plot_f) plot(p)
+  out_res
+}
+```
+
+### 4 Running SCENIC with Batf data
+
+```{r}
+library(GENIE3)
+library(RcisTarget)
+library(AUCell)
+library(data.table)
+library(dplyr)
+library(stringr)
+
+hs_motif_ranking <- importRankings("../ext_data/cisTarget_databases/hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+hs_annotation <- fread("../ext_data/cisTarget_databases/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",sep="\t")
+mm_motifranking <- importRankings("../ext_data/cisTarget_databases/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+mm_annotation <- data.table::fread("../ext_data/cisTarget_databases/motifs-v8-nr.mgi-m0.001-o0.0.tbl",sep="\t")
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/GRNs/Batf3_KO_genie3_atfr.rds")
+atfr <- scater::logNormCounts(atfr)
+exprMatr <- assay(atfr,"logcounts")
+grn_tab <- GRN(atfr,"genie3")['Batf3',,drop=FALSE]
+grn_frm <- GENIE3::getLinkList(as.matrix(grn_tab),threshold = 0)
+top_num <- round(0.05*ncol(grn_tab))
+grn_frm <- grn_frm %>% group_by(regulatoryGene) %>% top_n(top_num,weight)
+grn_list <- split(as.character(grn_frm$targetGene),as.character(grn_frm$regulatoryGene))
+
+grn_cistarget_res <- cisTarget(geneSets = grn_list, motifRankings = mm_motifranking, motifAnnot = mm_annotation, highlightTFs='Batf3',nesThreshold = 0)
+grn_cistarget <- grn_cistarget_res[TFinDB %in% c("**","*"),][enrichedGenes!="",]
+
+filterTFlists <- function(str){
+  str <- str_replace_all(str, "\\s\\(directAnnotation\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity_n_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\;\\s?+$","")
+  str <- str_split(str,pattern = "\\;\\s")
+  str
+}
+grn_cistarget$TF_highConf <- filterTFlists(grn_cistarget$TF_highConf)
+grn_cistarget$TF_lowConf <- filterTFlists(grn_cistarget$TF_lowConf)
+grn_cistarget_filter <- grn_cistarget[apply(grn_cistarget,1,function(x){
+  x['geneSet'] %in% unlist(x['TF_highConf']) || x['geneSet'] %in% unlist(x['TF_lowConf'])
+}),]
+grn_cistarget_filter$enrichedGenes <- str_split(grn_cistarget_filter$enrichedGenes,pattern =";")
+grn_regulon <- split(grn_cistarget_filter$enrichedGenes,grn_cistarget_filter$geneSet)
+grn_regulon <- lapply(grn_regulon,function(x){unique(unlist(x))})
+grn_regulon_num <- sapply(grn_regulon,length)
+grn_regulon <- grn_regulon[names(grn_regulon_num[which(grn_regulon_num>4)])]
+
+#---get expression ranks
+cells_rankings <- AUCell_buildRankings(exprMatr, nCores=1, plotStats=FALSE)
+cells_AUC <- AUCell_calcAUC(geneSets=grn_regulon, rankings = cells_rankings, normAUC = TRUE)
+auc_value <- getAUC(cells_AUC)
+saveRDS(auc_value,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/AUC_value.rds")
+
+#------performance
+auc_value <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/AUC_value.rds")
+
+labels <- colData(atfr)[['orig.ident']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="WT",1,-1)
+prediction <- auc_value['Nkx2-1',names(labels)]
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred,"auc")
+scenic_auc <- unlist(perf@y.values)
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+out_frm <- data.frame(FPR = perf@x.values[[1]],
+                      TPR = perf@y.values[[1]],
+                      AUC = rep(scenic_auc,length(perf@x.values[[1]])),
+                      method = rep('SCENIC',length(perf@x.values[[1]]))
+)
+saveRDS(out_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/ROC_AUC_perform.rds")
+out_frm <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/ROC_AUC_perform.rds")
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+col_frm <- as.data.frame(colData(atfr))
+col_frm$auc_value <- auc_value[1,row.names(col_frm)]
+
+library(ggplot2)
+p <- ggplot(col_frm,aes(x=orig.ident,y=auc_value))+
+  geom_jitter()
+p
+
+
+
+```
+
+#### 5. running dorothera
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Batf3_KO/objects/Batf3_KO_atfr_init.rds")
+atfr <- scater::logNormCounts(atfr)
+
+library(dorothea)
+regulons <- dorothea::dorothea_mm %>% filter(tf == "Batf3")
+exprMatr <- as.matrix(assay(atfr,"logcounts"))
+tf_activities <- run_viper(exprMatr, regulons, options =  list(method = "scale", minsize = 5, 
+                                                  eset.filter = FALSE, cores = 1, verbose = TRUE))
+
+labels <- colData(atfr)[['orig.ident']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="WT",1,-1)
+prediction <- tf_activities["Batf3",names(labels)]
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred, "auc")
+dorothea_auc <- unlist(perf@y.values)
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+out_frm <- data.frame(FPR = perf@x.values[[1]],
+                      TPR = perf@y.values[[1]],
+                      AUC = rep(dorothea_auc,length(perf@x.values[[1]])),
+                      method = rep('dorothea',length(perf@x.values[[1]]))
+)
+saveRDS(out_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/dorothea/ROC_AUC_perform.rds")
+
+
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+mat_data <-data.frame(val=prediction,label=labels[names(prediction)],check.rows = T)
+library(ggplot2)
+p <- ggplot(mat_data,aes(x=label,y=val))+
+  geom_jitter()
+p
+```

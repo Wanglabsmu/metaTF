@@ -1,0 +1,257 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#### 1.1 differenr gene number test
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+atfr <- scater::logNormCounts(atfr)
+test_gene_num <- c(500,1000,2000,3000,5000,8000,10000)
+
+getGRN <- function(test_gene_num, object, nrep = 5){
+  TFs <- setdiff(unique(colData(object)$gene),"CTRL")
+  other_genes <- setdiff(row.names(object),TFs)
+  sample_num <- test_gene_num-length(TFs)
+  
+  selected_obj_list <- lapply(1:nrep, function(x, obj, other_genes, sample_num, TFs){
+    selected_genes <- sample(x = other_genes, size = sample_num)
+    obj[c(TFs,selected_genes),]
+  },other_genes=other_genes, sample_num=sample_num, TFs=TFs, obj=object)
+  names(selected_obj_list) <- paste("rep_",1:nrep,sep="")
+  atfr_list <- lapply(X = selected_obj_list, FUN = runGRNs, tfs=TFs)
+  saveRDS(atfr_list, paste("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/test_grns/atfr_",test_gene_num,"_gene_list.rds",sep=""))
+}
+
+runGRNs <- function(atfr, tfs){
+  atfr <- inferGRNs(atfr, method = "pidc", ncores=4)
+  atfr <- inferGRNs(atfr, method = "pcor", use_assay = "logcounts",ncores=4)
+  atfr <- inferGRNs(atfr, method = "genie3", use_assay = "logcounts", use_regulator =tfs, ncores=4)
+  atfr
+}
+
+test_gene_num <- c(500, 1000, 2000, 3000, 5000, 8000, 10000)
+test_gene_num <- c(5000, 8000, 10000)
+
+my_test <- lapply(X = test_gene_num, FUN = getGRN,object=atfr)
+
+```
+#### 1.2 different gene number performance 
+
+```{r}
+get_auc <- function(obj, i, gene_list, aucMaxRank=5000){
+  mat <- as.matrix(GRN(obj,i))
+  gene_list <- lapply(gene_list,function(x){intersect(x,colnames(mat))})
+  gene_list <- gene_list[sapply(gene_list,length)>0]
+  mat <- t(abs(mat))
+  overlap_TFs <- intersect(names(gene_list),colnames(mat))
+  mat <- mat[,overlap_TFs]
+  gene_list <- gene_list[overlap_TFs]
+  cells_rankings <- AUCell::AUCell_buildRankings(exprMat = mat,plotStats = FALSE)
+  cells_AUC <- AUCell::AUCell_calcAUC(geneSets = gene_list,rankings = cells_rankings, aucMaxRank = aucMaxRank, normAUC = T)
+  cells_AUC <- assay(cells_AUC)
+  all_out_TFs <- intersect(row.names(cells_AUC),colnames(cells_AUC))
+  cells_AUC <- diag(as.matrix(cells_AUC[all_out_TFs,all_out_TFs]))
+  cells_AUC
+}
+
+#----default aucMaxRank
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+TFs <- setdiff(unique(colData(atfr)$gene),"CTRL")
+doro_regulon <- dorothea_regulons$hs_regulons %>% filter(tf %in% TFs)
+doro_regulon <- dfToList(doro_regulon,tf_col = "tf",target_col = "target")
+
+#----
+get_mean_auc <- function(atfr_list, perm_num){
+  #---PIDC
+  PIDC_AUC_list <- lapply(atfr_list, function(x, i, gene_list, aucMaxRank){
+  get_auc(obj = x, i=i, gene_list=gene_list, aucMaxRank=aucMaxRank)
+    },i="pidc", gene_list=doro_regulon, aucMaxRank=perm_num*0.1)
+PIDC_AUC_list <- lapply(PIDC_AUC_list,function(x,TFs){
+  out_frm <- data.frame(TF=TFs,AUC=x[TFs])
+  out_frm[is.na(out_frm)]<-0
+  out_frm
+},TFs=TFs)
+PIDC_AUC_frm <- purrr::reduce(PIDC_AUC_list,full_join,by=c("TF"='TF'))
+colnames(PIDC_AUC_frm)[-1] <- names(PIDC_AUC_list)
+row.names(PIDC_AUC_frm) <- PIDC_AUC_frm$TF
+#---PCOR
+PCOR_AUC_list <- lapply(atfr_list, function(x,i, gene_list, aucMaxRank){
+  get_auc(obj = x, i=i, gene_list=gene_list, aucMaxRank=aucMaxRank)
+},i="pcor", gene_list=doro_regulon, aucMaxRank = perm_num*0.1)
+PCOR_AUC_list <- lapply(PCOR_AUC_list,function(x,TFs){
+  out_frm <- data.frame(TF=TFs,AUC=x[TFs])
+  out_frm[is.na(out_frm)]<-0
+  out_frm
+},TFs=TFs)
+PCOR_AUC_frm <- purrr::reduce(PCOR_AUC_list,full_join,by=c("TF"='TF'))
+colnames(PCOR_AUC_frm)[-1] <- names(PCOR_AUC_list)
+row.names(PCOR_AUC_frm) <- PCOR_AUC_frm$TF
+#---GENIE3
+GENIE3_AUC_list <- lapply(atfr_list, function(x,i, gene_list, aucMaxRank){
+  get_auc(obj = x, i=i, gene_list=gene_list, aucMaxRank=aucMaxRank)
+},i="genie3", gene_list=doro_regulon, aucMaxRank=perm_num*0.1)
+GENIE3_AUC_list <- lapply(GENIE3_AUC_list,function(x,TFs){
+  out_frm <- data.frame(TF=TFs,AUC=x[TFs])
+  out_frm[is.na(out_frm)]<-0
+  out_frm
+},TFs=TFs)
+GENIE3_AUC_frm <- purrr::reduce(GENIE3_AUC_list,full_join,by=c("TF"='TF'))
+colnames(GENIE3_AUC_frm)[-1] <- names(GENIE3_AUC_list)
+row.names(GENIE3_AUC_frm) <- GENIE3_AUC_frm$TF
+  
+data.frame(PIDC=apply(PIDC_AUC_frm[,-1],1,mean),
+           PCOR=apply(PCOR_AUC_frm[,-1],1,mean),
+           GENIE3=apply(GENIE3_AUC_frm[,-1],1,mean))
+}
+
+grn_path <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/test_grns"
+files <- list.files(grn_path)
+
+
+
+
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_500_gene_list.rds"))
+AUC_500_frm <- get_mean_auc(atfr_list = atfr_list,perm_num = 500)
+AUC_500_frm_scale <- t(apply(AUC_500_frm,1,scale))
+AUC_500_frm_scale[is.na(AUC_500_frm_scale)] <- 0
+colnames(AUC_500_frm_scale) <- colnames(AUC_500_frm)
+AUC_500_frm_melt <- reshape2::melt(t(AUC_500_frm_scale))
+#AUC_500_frm_melt <- reshape2::melt(t(AUC_500_frm))
+colnames(AUC_500_frm_melt) <- c("method","TF","AUC")
+AUC_500_frm_melt$gene_num <- rep(500,nrow(AUC_500_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_1000_gene_list.rds"))
+AUC_1000_frm <- get_mean_auc(atfr_list = atfr_list, perm_num = 1000)
+AUC_1000_frm_scale <- t(apply(AUC_1000_frm,1,scale))
+AUC_1000_frm_scale[is.na(AUC_1000_frm_scale)] <- 0
+colnames(AUC_1000_frm_scale) <- colnames(AUC_1000_frm)
+AUC_1000_frm_melt <- reshape2::melt(t(AUC_1000_frm_scale))
+#AUC_1000_frm_melt <- reshape2::melt(t(AUC_1000_frm))
+colnames(AUC_1000_frm_melt) <- c("method","TF","AUC")
+AUC_1000_frm_melt$gene_num <- rep(1000,nrow(AUC_1000_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_2000_gene_list.rds"))
+AUC_2000_frm <- get_mean_auc(atfr_list = atfr_list,perm_num = 2000)
+AUC_2000_frm_scale <- t(apply(AUC_2000_frm,1,scale))
+AUC_2000_frm_scale[is.na(AUC_2000_frm_scale)] <- 0
+colnames(AUC_2000_frm_scale) <- colnames(AUC_2000_frm)
+AUC_2000_frm_melt <- reshape2::melt(t(AUC_2000_frm_scale))
+#AUC_2000_frm_melt <- reshape2::melt(t(AUC_2000_frm))
+colnames(AUC_2000_frm_melt) <- c("method","TF","AUC")
+AUC_2000_frm_melt$gene_num <- rep(2000,nrow(AUC_2000_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_3000_gene_list.rds"))
+AUC_3000_frm <- get_mean_auc(atfr_list = atfr_list,perm_num = 3000)
+AUC_3000_frm_scale <- t(apply(AUC_3000_frm,1,scale))
+AUC_3000_frm_scale[is.na(AUC_3000_frm_scale)] <- 0
+colnames(AUC_3000_frm_scale) <- colnames(AUC_3000_frm)
+AUC_3000_frm_melt <- reshape2::melt(t(AUC_3000_frm_scale))
+#AUC_3000_frm_melt <- reshape2::melt(t(AUC_3000_frm))
+colnames(AUC_3000_frm_melt) <- c("method","TF","AUC")
+AUC_3000_frm_melt$gene_num <- rep(3000,nrow(AUC_3000_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_5000_gene_list.rds"))
+AUC_5000_frm <- get_mean_auc(atfr_list = atfr_list,perm_num = 5000)
+AUC_5000_frm_scale <- t(apply(AUC_5000_frm,1,scale))
+AUC_5000_frm_scale[is.na(AUC_5000_frm_scale)] <- 0
+colnames(AUC_5000_frm_scale) <- colnames(AUC_5000_frm)
+AUC_5000_frm_melt <- reshape2::melt(t(AUC_5000_frm_scale))
+#AUC_5000_frm_melt <- reshape2::melt(t(AUC_5000_frm))
+colnames(AUC_5000_frm_melt) <- c("method","TF","AUC")
+AUC_5000_frm_melt$gene_num <- rep(5000,nrow(AUC_5000_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_8000_gene_list.rds"))
+AUC_8000_frm <- get_mean_auc(atfr_list = atfr_list, perm_num = 8000)
+AUC_8000_frm_scale <- t(apply(AUC_8000_frm,1,scale))
+AUC_8000_frm_scale[is.na(AUC_8000_frm_scale)] <- 0
+colnames(AUC_8000_frm_scale) <- colnames(AUC_8000_frm)
+AUC_8000_frm_melt <- reshape2::melt(t(AUC_8000_frm_scale))
+#AUC_8000_frm_melt <- reshape2::melt(t(AUC_8000_frm))
+colnames(AUC_8000_frm_melt) <- c("method","TF","AUC")
+AUC_8000_frm_melt$gene_num <- rep(8000,nrow(AUC_8000_frm_melt))
+
+atfr_list <- readRDS(file.path(grn_path, "atfr_10000_gene_list.rds"))
+AUC_10000_frm <- get_mean_auc(atfr_list = atfr_list,perm_num = 10000)
+AUC_10000_frm_scale <- t(apply(AUC_10000_frm,1,scale))
+AUC_10000_frm_scale[is.na(AUC_10000_frm_scale)] <- 0
+colnames(AUC_10000_frm_scale) <- colnames(AUC_10000_frm)
+AUC_10000_frm_melt <- reshape2::melt(t(AUC_10000_frm_scale))
+#AUC_10000_frm_melt <- reshape2::melt(t(AUC_10000_frm))
+colnames(AUC_10000_frm_melt) <- c("method","TF","AUC")
+AUC_10000_frm_melt$gene_num <- rep(10000,nrow(AUC_10000_frm_melt))
+
+all_AUC_list <- list(AUC_500_frm,AUC_1000_frm,AUC_2000_frm,AUC_3000_frm,AUC_5000_frm,AUC_8000_frm,AUC_10000_frm)
+saveRDS(all_AUC_list,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/test_grns/test_grns_AUC_performance.rds")
+all_AUC_frm <- rbind(AUC_500_frm_melt,AUC_1000_frm_melt,AUC_2000_frm_melt,AUC_3000_frm_melt,
+                     AUC_5000_frm_melt,AUC_8000_frm_melt,AUC_10000_frm_melt)
+
+aa <- t(apply(AUC_10000_frm,1,scale))
+colnames(aa) <- colnames(AUC_10000_frm)
+aa[is.na(aa)] <- 0
+colMeans(aa)
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+plot_frm <- all_AUC_frm
+plot_frm$gene_num <- factor(as.character(plot_frm$gene_num),levels=unique(as.character(plot_frm$gene_num)))
+plot_frm$method <- factor(plot_frm$method,levels=c("PIDC","GENIE3","PCOR"))
+
+p <- ggplot(plot_frm,aes(x=gene_num,color=method,y=AUC))+
+  geom_boxplot(outlier.colour = NA)+
+#  geom_violin()+
+  geom_jitter(shape=16,size=0.5,width=.2,color="black")+
+  mytheme+
+  facet_wrap(.~method)
+p
+
+ggsave(filename = "grn_test_auc_normalized_val.pdf", plot = p, device = "pdf", path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/grn_method_comparison/figure/", width = 130, height = 50, units = "mm")
+
+
+plot_density <- plot_frm
+plot_density$method <- factor(plot_density$method, levels = rev(levels(plot_density$method)))
+plot_density$gene_num <- factor(as.character(plot_density$gene_num), levels = rev(unique(as.character(plot_density$gene_num))))
+
+library(ggridges)
+q <- ggplot(data = plot_density, aes(x = AUC, y = gene_num, fill = gene_num, height=..density..))+
+  geom_density_ridges_gradient(size = line_size, scale = 1.4, panel_scaling = F, alpha=.8,na.rm=T)+
+  mytheme+
+  facet_wrap(.~method)
+q
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

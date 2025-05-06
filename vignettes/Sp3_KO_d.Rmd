@@ -1,0 +1,273 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+#---mtx file with 3 columns
+exp_mat <- Matrix::readMM("D:/HSC_Autophagy/3.TFKO_data/2020_G&D_SP3_KO/GSE146684_gene_by_cell_count_matrix.txt.gz")
+gene_anno <- read.csv("D:/HSC_Autophagy/3.TFKO_data/2020_G&D_SP3_KO/GSE146684_gene_annotation.csv.gz",header=T,row.names = 1)
+cell_anno <- read.csv("D:/HSC_Autophagy/3.TFKO_data/2020_G&D_SP3_KO/GSE146684_cell_annotation.csv.gz",header=T,row.names = 1)
+row.names(exp_mat) <- row.names(gene_anno)
+colnames(exp_mat) <- row.names(cell_anno)
+
+exp_mat_filter <- exp_mat[apply(exp_mat,1,function(x){length(x[which(x>0)])>=10}),]
+
+sce <- SingleCellExperiment(list(counts=exp_mat_filter))
+sce <- scater::logNormCounts(sce)
+colData(sce) <- DataFrame(cell_anno)
+rowData(sce) <- DataFrame(gene_anno[row.names(exp_mat_filter),])
+
+sce <- scater::runPCA(x=sce,exprs_values = "logcounts") 
+plotReducedDim(sce, dimred="PCA",colour_by = "Dataset")
+sce <- scater::runTSNE(x = sce, exprs_values = "logcounts")
+p <- plotReducedDim(sce, dimred="TSNE",colour_by = "Dataset",point_size=0.5,point_alpha=1)
+sce <- scater::runUMAP(x = sce, exprs_values = "logcounts")
+p <- plotReducedDim(sce, dimred="UMAP",colour_by = "Dataset",point_size=0.5,point_alpha=1)
+
+
+
+
+atfr <- inferGRNs(sce, method ="pidc", ncores=6)
+exp_mat_filter <- as.data.frame(exp_mat)
+exp_mat_filter$gene_name <- gene_anno[row.names(exp_mat_filter),"gene_short_name"]
+exp_mat_merge <- exp_mat_filter %>% group_by(gene_name) %>% summarise_all(.,sum)
+exp_mat_filter <- as.matrix(exp_mat_merge[,-1])
+row.names(exp_mat_filter) <- exp_mat_merge$gene_name
+exp_mat_filter2 <- exp_mat_filter[apply(exp_mat_filter,1,function(x){length(x[which(x>0)])>=10}),]
+
+atfr <- scATFR(exp_data = exp_mat_filter2,col_data = cell_anno)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/exp_data/atfr_init.rds")
+exp_mat_filter <- apply(exp_mat_filter,2,function(x){tapply(x,gene_anno[names(x),'gene_short_name'],sum)})
+
+
+
+atfr <- scATFR(exp_data = exp_mat_filter,col_data = cell_anno,row_data = gene_anno[row.names(exp_mat_filter),])
+
+
+saveRDS(atfr,)
+
+Sp3 <- gene_anno %>% filter(gene_short_name %in% "Sp3")
+
+exp_mat_Sp3 <- exp_mat[Sp3$gene_id,]
+cell_anno$Sp3 <- exp_mat_Sp3[row.names(cell_anno)]
+
+p <- ggplot(cell_anno,aes(x=Dataset,y=Sp3))+
+#  geom_jitter()+
+  geom_violin()
+p
+
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/atfr.rds")
+atfr@metadata$TFs <- intersect(scATFR::TF_Symbols$mouse,row.names(atfr))
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/atfr.rds")
+
+TFs <- scATFR::TF_Symbols$mouse
+
+
+```
+```{r}
+get_perf <- function(x,
+                     gene_list,
+                     grn_method=c("pcor","genie3","sclink","pidc"),
+                     filter=TRUE,
+                     act_method = c("viper", "aucell", "ssgsea"),
+                     maxSize=500){
+  grn_method <- match.arg(grn_method)
+  act_method <- match.arg(act_method)
+  if(filter){
+    x <- filterRegulons(x = x, use_grn=grn_method, gene_list=gene_list, maxSize=maxSize)
+    x <- regulonActivity(x, method=act_method)
+  }else{
+    x <- regulonActivity(x, gene_list=gene_list, method=act_method)
+  }
+  mat <- assay(altExp(x, e = act_method))
+  labels <- colData(x)[['Dataset']]
+  names(labels) <- row.names(colData(x))
+  label <- ifelse(labels=="SP3_WT",1,-1)
+  prediction <- mat[1,names(labels)]
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc_value <- perf@y.values[[1]]
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc_value,length(perf@x.values[[1]])),
+                        GRNs = rep(grn_method,length(perf@x.values[[1]])),
+                        Activity = rep(act_method, length(perf@x.values[[1]])),
+                        withFilter = rep(filter,length(perf@x.values[[1]])))
+  plot_frm <- as.data.frame(colData(x))
+  plot_frm$activity <- mat[1,row.names(plot_frm)]
+  p <- ggplot2::ggplot(data = plot_frm,mapping = aes(x = Dataset,y=activity))+
+    geom_jitter()
+#  plot(p)
+  out_res
+}
+```
+
+
+
+#### 2.1 GRN evaluation
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/object/atfr.rds")
+
+pidc_grn <- as.matrix(GRN(atfr,"pidc"))
+pidc_net <- PIDC::matToNet(pidc_grn)
+saveRDS(pidc_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/GRNs/PIDC_net.rds")
+Sp3_pidc_grn <- pidc_net %>% filter(regulator %in% "Sp3")
+Sp3_pidc_grn <- pidc_grn["Sp3",]
+
+Sp3_pidc_grn_tab <- data.frame(tf=rep('Sp3',length(Sp3_pidc_grn)),target =names(Sp3_pidc_grn), weight = Sp3_pidc_grn)
+
+#---our regulons
+mu_regulon <- readRDS(system.file("./inst/extdata/mm_pantissue_network.rds",package = "scATFR"))
+mu_regulon <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/Marbach2016_merged/06_endothelial_cells.txt.gz",sep="\t",header=T)
+Sp3_lung <- mu_regulon %>% filter(tf =="Sp3")
+Sp3_lung_integer <- integraNets(grnNets = list(Sp3_lung, Sp3_pidc_grn_tab),norm_weight = T,join_type = "full", min_target_num = 50, max_target_num = 2000,return_sig = T,maxInter = 5)
+
+merge_PIDC_regulon <- dfToList(Sp3_lung_integer)
+
+merge_PIDC_viper <- get_perf(x = atfr, gene_list = merge_PIDC_regulon, grn_method = "pidc", 
+                             act_method = "ssgsea", maxSize = 500, filter = T)
+
+
+```
+
+
+### 3 Running SCENIC with Nkx2-ko data
+
+```{r}
+library(GENIE3)
+library(RcisTarget)
+library(AUCell)
+library(data.table)
+library(dplyr)
+library(stringr)
+
+hs_motif_ranking <- importRankings("../ext_data/cisTarget_databases/hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+hs_annotation <- fread("../ext_data/cisTarget_databases/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",sep="\t")
+mm_motifranking <- importRankings("../ext_data/cisTarget_databases/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+mm_annotation <- data.table::fread("../ext_data/cisTarget_databases/motifs-v8-nr.mgi-m0.001-o0.0.tbl",sep="\t")
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/object/atfr.rds")
+atfr <- scater::logNormCounts(atfr)
+exprMatr <- assay(atfr,"logcounts")
+grn_tab <- GRN(atfr,"genie3")['Sp3',,drop=FALSE]
+grn_frm <- GENIE3::getLinkList(as.matrix(grn_tab),threshold = 0)
+top_num <- round(0.05*ncol(grn_tab))
+grn_frm <- grn_frm %>% group_by(regulatoryGene) %>% top_n(top_num,weight)
+grn_list <- split(as.character(grn_frm$targetGene),as.character(grn_frm$regulatoryGene))
+grn_list <- lapply(grn_list, function(x){intersect(x,colnames(mm_motifranking@rankings))})
+grn_cistarget_res <- cisTarget(geneSets = grn_list,motifRankings = mm_motifranking, motifAnnot = mm_annotation, highlightTFs='Sp3',nesThreshold = 0)
+grn_cistarget <- grn_cistarget_res[TFinDB %in% c("**","*"),][enrichedGenes!="",]
+
+filterTFlists <- function(str){
+  str <- str_replace_all(str, "\\s\\(directAnnotation\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity_n_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\;\\s?+$","")
+  str <- str_split(str,pattern = "\\;\\s")
+  str
+}
+grn_cistarget$TF_highConf <- filterTFlists(grn_cistarget$TF_highConf)
+grn_cistarget$TF_lowConf <- filterTFlists(grn_cistarget$TF_lowConf)
+grn_cistarget_filter <- grn_cistarget[apply(grn_cistarget,1,function(x){
+  x['geneSet'] %in% unlist(x['TF_highConf']) || x['geneSet'] %in% unlist(x['TF_lowConf'])
+}),]
+grn_cistarget_filter$enrichedGenes <- str_split(grn_cistarget_filter$enrichedGenes,pattern =";")
+grn_regulon <- split(grn_cistarget_filter$enrichedGenes,grn_cistarget_filter$geneSet)
+grn_regulon <- lapply(grn_regulon,function(x){unique(unlist(x))})
+grn_regulon_num <- sapply(grn_regulon,length)
+grn_regulon <- grn_regulon[names(grn_regulon_num[which(grn_regulon_num>4)])]
+
+#---get expression ranks
+cells_rankings <- AUCell_buildRankings(exprMatr, nCores=1, plotStats=FALSE)
+cells_AUC <- AUCell_calcAUC(geneSets=grn_regulon, rankings = cells_rankings, normAUC = TRUE)
+auc_value <- getAUC(cells_AUC)
+saveRDS(auc_value,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/AUC_value.rds")
+
+#------performance
+auc_value <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/AUC_value.rds")
+
+labels <- colData(atfr)[['Dataset']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="SP3_WT",1,-1)
+prediction <- auc_value['Sp3',names(labels)]
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred,"auc")
+scenic_auc <- unlist(perf@y.values)
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+out_frm <- data.frame(FPR = perf@x.values[[1]],
+                      TPR = perf@y.values[[1]],
+                      AUC = rep(scenic_auc,length(perf@x.values[[1]])),
+                      method = rep('SCENIC',length(perf@x.values[[1]]))
+)
+saveRDS(out_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/ROC_AUC_perform.rds")
+out_frm <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/SCENIC/ROC_AUC_perform.rds")
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+col_frm <- as.data.frame(colData(atfr))
+col_frm$auc_value <- auc_value[1,row.names(col_frm)]
+
+library(ggplot2)
+p <- ggplot(col_frm,aes(x=Dataset,y=auc_value))+
+  geom_jitter()
+p
+
+
+
+```
+
+
+
+#### 5. running dorothera
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Sp3_KO/object/atfr.rds")
+library(dorothea)
+regulons <- dorothea::dorothea_mm %>% filter(tf == "Sp3")
+exprMatr <- as.matrix(assay(atfr,"logcounts"))
+tf_activities <- run_viper(exprMatr, regulons, options =  list(method = "scale", minsize = 5, 
+                                                  eset.filter = FALSE, cores = 1, verbose = TRUE))
+
+labels <- colData(atfr)[['Dataset']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="SP3_WT",1,-1)
+prediction <- tf_activities["Sp3",names(labels)]
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred, "auc")
+dorothea_auc <- unlist(perf@y.values)
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+out_frm <- data.frame(FPR = perf@x.values[[1]],
+                      TPR = perf@y.values[[1]],
+                      AUC = rep(dorothea_auc,length(perf@x.values[[1]])),
+                      method = rep('dorothea',length(perf@x.values[[1]]))
+)
+saveRDS(out_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/dorothea/ROC_AUC_perform.rds")
+
+
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+mat_data <-data.frame(val=prediction,label=labels[names(prediction)],check.rows = T)
+library(ggplot2)
+p <- ggplot(mat_data,aes(x=label,y=val))+
+  geom_jitter()
+p
+```
+
+
+
+
+
+
+
+

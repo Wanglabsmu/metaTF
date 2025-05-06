@@ -1,0 +1,520 @@
+---
+title: "Crop-seq"
+author: "Puwen Tan"
+date: "2021/6/14"
+output: html_document
+---
+#### 1.1 CROP-seq
+```{r}
+library(data.table)
+data <- data.table::fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/raw_data/CROP-seq_Jurkat_TCR.digital_expression.500genes.only_assigned.csv",sep=",",data.table=F)
+meta_data <- as.data.table(t(data[1:4,]),keep.rownames = TRUE)
+colnames(meta_data) <- as.character(meta_data[1,])
+meta_data <- meta_data[-1,]
+duplicated_cells <- meta_data[duplicated(meta_data$cell),]
+meta_data <- tibble(meta_data) %>% filter(!(cell %in% duplicated_cells$cell))
+
+dir.create("../ext_data/CROPseq/expression_data/")
+saveRDS(meta_data,"../ext_data/CROPseq/raw_data/count_metadata.rds")
+fwrite(meta_data,"../ext_data/CROPseq/expression_data/count_metadata.txt",sep="\t")
+
+
+exp_data <- data[-c(1:5),]
+cols <- c("GENE",meta_data$cell)
+colnames(exp_data) <- c("GENE",as.character(data[2,-1]))
+exp_data <- exp_data[,..cols]
+saveRDS(exp_data,"../ext_data/CROPseq/raw_data/count_matrix.rds")
+fwrite(exp_data,"../ext_data/CROPseq/expression_data/count_matrix.txt",sep="\t")
+```
+
+#### 1.2 differential expressed genes
+```{r}
+exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/raw_data/count_matrix.rds")
+meta_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/raw_data/count_metadata.rds")
+# unstimulated cells
+library(dplyr)
+unstimulated_metadata <- tibble(meta_data) %>% filter(condition=="unstimulated")
+cols <- c("GENE",unstimulated_metadata$cell)
+unstimulated_count <- tibble(exp_data) %>% filter(GENE %in% unstimulated_metadata$gene) %>%
+  select(.,cols)
+CTRL_cells <- unstimulated_metadata %>% filter(gene == "CTRL")
+essten_gene <- c("MVD","TUBB","DHODH")
+TF_cells <- unstimulated_metadata %>% filter(!(gene %in% essten_gene))
+
+genes <- names(table(TF_cells$grna))
+genes <- genes[-grep("^CTRL",genes)]
+outlist <- list()
+for(i in genes){
+  RUNX1_cells <- unstimulated_metadata %>% filter(grna == i)
+  Gene <- unique(RUNX1_cells$gene)
+  RUNX1_expression <- unstimulated_count %>% filter(GENE == Gene) %>%
+  select(RUNX1_cells$cell) %>% as.numeric()
+  RUNX1_CTRL_expression <- unstimulated_count %>% filter(GENE == Gene) %>%
+  select(CTRL_cells$cell) %>% as.numeric()
+  p_val <- t.test(RUNX1_expression,RUNX1_CTRL_expression)$p.value
+  names(p_val) <- i
+  logFC <- log2(mean(RUNX1_expression)/mean(RUNX1_CTRL_expression))
+  outfrm <- data.frame(gene=i,logFC=logFC, pval=p_val)
+  outlist[[i]] <- outfrm
+}
+outlist <- rbindlist(outlist)
+outlist$padj <- p.adjust(outlist$pval,method="BH")
+outlist_diff <- tibble(outlist) %>% filter(padj<0.2 & logFC < -1)
+outlist_diff_sample <- rep("diff",nrow(outlist_diff))
+names(outlist_diff_sample) <- outlist_diff$gene
+dim(unstimulated_metadata[unstimulated_metadata$grna %in% outlist_diff$gene,])
+
+plot_frm <- outlist[order(outlist$logFC),]
+plot_frm$type <- outlist_diff_sample[plot_frm$gene]
+plot_frm$gene <- factor(plot_frm$gene,levels=unique(plot_frm$gene))
+
+
+library(ggplot2)
+p <- ggplot(data = plot_frm,aes(x=logFC,y=-log10(padj),color=type))+
+  geom_point()
+p
+
+select_metadata <- unstimulated_metadata %>% filter(grna %in% outlist_diff$gene)
+select_metadata <- rbind(select_metadata, CTRL_cells)
+fwrite(select_metadata,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_metadata.txt",sep="\t")
+
+select_counts <- tibble(exp_data) %>% select(c("GENE",select_metadata$cell))
+fwrite(select_counts,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_matrix.txt",sep="\t")
+
+```
+
+#### 1.3 quality control
+```{r}
+counts <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_matrix.txt",sep="\t",header=T,row.names=1,check.names=FALSE)
+counts <- as.matrix(counts)
+meta_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_metadata.txt",sep="\t",header=T)
+row.names(meta_data) <- meta_data$cell
+
+ncounts <- colSums(counts)
+ngenes <- apply(counts,2,function(x){length(x[x>0])})
+TFs <- c("NFKB2","RELB","RUNX1","RELA","JUNB","NFKB1","RUNX2","NR4A1","ETS1","FOS","GATA3","EGR1","JUN")
+TF_counts <- counts[TFs ,]
+
+get_counts <- function(gname, col_data=meta_data, matrix= counts){
+  col_data <- col_data %>% filter(gene %in% c("CTRL", gname))
+  exp <- matrix[gname,  col_data$cell]
+  col_data$counts <- exp[col_data$cell]
+  col_data$gene_name <- rep(gname,nrow(col_data))
+  col_data
+}
+counts_list <- lapply(TFs, get_counts)
+counts_list <- do.call(rbind,counts_list)
+counts_list$gene_name <- factor(counts_list$gene_name,levels = TFs)
+library(ggplot2)
+p <- ggplot(counts_list,aes(x=gene,y=log2(counts+1)),color=gene)+
+  geom_jitter(position=position_jitter(width = 0.3,height = 0),shape=16,size=0.2)+
+  facet_wrap(.~gene_name,scale="free_x",nrow=1)+
+  mytheme
+p
+ggsave(filename = paste("expresion_quality_control.pdf",sep=""), plot = p, device = "pdf", path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/quality_control/", width = 150, height = 35, units = "mm")
+
+
+```
+
+
+
+###2.1 GRN running time
+
+```{r}
+exp_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_matrix.txt",sep="\t",header=T,row.names=1)
+exp_data <- exp_data[apply(exp_data,1,function(x){length(x[x>0])>=10}),]
+
+num_test <- c(100, 200, 400, 600, 800, 1000)
+test_time <- pbapply::pblapply(num_test,function(x,mat){
+  gname <- sample(x = row.names(mat),size = x+100,replace = FALSE)
+  mat <- as.matrix(mat[gname,])
+  mat <- mat[apply(mat,1,function(x){length(x[x>0])>=10}),]
+  mat <- mat[1:x,]
+  time <- c()
+  for(i in c("pcor", "pidc", "genie3")){
+    st <- proc.time()
+    grns <- inferGRNs(x = mat, method= i, ncores=6)
+    diff_st <- proc.time()-st
+    names(diff_st) <- i
+    time[[i]] <- diff_st
+  }
+  rm(list="grns")
+  return(time)
+},mat=exp_data)
+names(test_time) <- num_test
+saveRDS(test_time,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/grn_method_comparison/PIDC_GENIE3_PCOR_running_time.rds")
+
+test_time_filter <- lapply(test_time,function(x){
+  sapply(x,function(y){y[3]})
+})
+test_time_filter <- do.call(rbind,test_time_filter)
+test_time_melt <- reshape2::melt(test_time_filter)
+colnames(test_time_melt) <- c("time","method","seconds")
+test_time_melt$method <- sapply(strsplit(as.character(test_time_melt$method),split = '\\.'),function(y){y[1]})
+test_time_melt$method <- factor(test_time_melt$method, levels=c("pidc","genie3","pcor"))
+library(ggplot2)
+p <- ggplot(test_time_melt,aes(x=time,y=seconds,color=method))+
+#  geom_bar(stat='identity',position="dodge")+
+  geom_line()+
+  geom_point()+
+  scale_x_continuous(limits=c(100,1000),breaks=seq(0,1000,by=200))+
+  scale_y_continuous(limits = c(0,5400),breaks=seq(0,5000,by=1000))
+p
+
+
+```
+
+#### 2.2 PIDC GENIE3 PCOR mat comparison
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+atfr <- scater::logNormCounts(atfr)
+PIDC_mat <- as.matrix(GRN(atfr,"pidc"))
+GENIE3_mat <- as.matrix(GRN(atfr,"genie3"))
+PCOR_mat <- abs(as.matrix(GRN(atfr,"pcor")))
+SCLINK_mat <- as.matrix(GRN(atfr,"sclink"))
+
+doro_regulon <- dorothea_regulons$hs_regulons
+doro_regulon <- dfToList(doro_regulon,tf_col = "tf",target_col = "target")
+doro_regulon <- doro_regulon[intersect(row.names(GENIE3_mat),names(doro_regulon))]
+
+get_auc <- function(mat, gene_list, aucMaxRank=1000){
+  mat <- t(abs(mat))
+  overlap_TFs <- intersect(names(gene_list),colnames(mat))
+  mat <- mat[,overlap_TFs]
+  gene_list <- gene_list[overlap_TFs]
+  cells_rankings <- AUCell::AUCell_buildRankings(exprMat = mat,plotStats = FALSE)
+  cells_AUC <- AUCell::AUCell_calcAUC(geneSets = gene_list,rankings = cells_rankings, aucMaxRank = aucMaxRank, normAUC = T)
+  cells_AUC <- assay(cells_AUC)
+  all_out_TFs <- intersect(row.names(cells_AUC),colnames(cells_AUC))
+  cells_AUC <- diag(as.matrix(cells_AUC[all_out_TFs,all_out_TFs]))
+  cells_AUC
+}
+
+#----default aucMaxRank
+aucMaxRank = 5000
+PIDC_auc <- get_auc(mat = PIDC_mat,gene_list = doro_regulon, aucMaxRank = aucMaxRank)
+GENIE3_auc <- get_auc(mat = GENIE3_mat,gene_list = doro_regulon, aucMaxRank = aucMaxRank)
+PCOR_auc <- get_auc(mat = PCOR_mat,gene_list = doro_regulon, aucMaxRank = aucMaxRank)
+SCLINK_auc <- get_auc(mat = SCLINK_mat,gene_list = doro_regulon, aucMaxRank = aucMaxRank)
+overlap_genes <- Reduce(intersect,list(names(PIDC_auc),names(GENIE3_auc),names(PCOR_auc),names(SCLINK_auc)))
+out_df <- data.frame(PIDC=PIDC_auc[overlap_genes],
+GENIE3=GENIE3_auc[overlap_genes],
+PCOR=PCOR_auc[overlap_genes],
+SCLINK=SCLINK_auc[overlap_genes])
+out_df <- out_df[,1:3]
+
+out_df_melt <- reshape2::melt(t(out_df))
+colnames(out_df_melt) <- c("method","gene_name","AUC")
+out_df <- out_df[order(out_df$PIDC,out_df$GENIE3,out_df$PCOR),]
+out_df_melt$gene_name <- factor(out_df_melt$gene_name,levels=row.names(out_df))
+saveRDS(out_df_melt,paste("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/grn_method_comparison/three_grn_method_auc_",aucMaxRank,".rds",sep=""))
+
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+p <- ggplot(out_df_melt,aes(x=gene_name,y=AUC,group=method,color=method))+
+  geom_line()+
+  geom_point(shape=16)+
+  mytheme
+p
+
+ggsave(filename = paste("three_grn_method_auc_",aucMaxRank,".pdf",sep=""), plot = p, device = "pdf", path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/grn_method_comparison/figure/", width = 100, height = 50, units = "mm")
+
+
+#----different aucMaxRank
+genes <- c(1000,2000,5000,10000)
+PIDC_auc_list <- pbapply::pblapply(genes,get_auc, mat = PIDC_mat, gene_list = doro_regulon)
+PIDC_auc_df <- do.call(cbind,PIDC_auc_list)
+colnames(PIDC_auc_df) <- genes
+PIDC_auc_df_melt <- reshape2::melt(PIDC_auc_df)
+colnames(PIDC_auc_df_melt) <- c("gene_name","gene_num","AUC")
+GENIE3_auc_list <- pbapply::pblapply(genes, get_auc, mat = GENIE3_mat, gene_list = doro_regulon)
+GENIE3_auc_df <- do.call(cbind,GENIE3_auc_list)
+colnames(GENIE3_auc_df) <- genes
+GENIE3_auc_df_melt <- reshape2::melt(GENIE3_auc_df)
+colnames(GENIE3_auc_df_melt) <- c("gene_name","gene_num","AUC")
+PCOR_auc_list <- pbapply::pblapply(genes, get_auc, mat = PCOR_mat, gene_list = doro_regulon)
+PCOR_auc_df <- do.call(cbind,PCOR_auc_list)
+colnames(PCOR_auc_df) <- genes
+PCOR_auc_df_melt <- reshape2::melt(PCOR_auc_df)
+colnames(PCOR_auc_df_melt) <- c("gene_name","gene_num","AUC")
+
+all_auc_frm <- rbindlist(list(PIDC=PIDC_auc_df_melt,GENIE3=GENIE3_auc_df_melt,PCOR=PCOR_auc_df_melt),idcol = "method")
+all_auc_frm$method <- factor(all_auc_frm$method,levels=c("PIDC","GENIE3","PCOR"))
+
+library(ggplot2)
+p <- ggplot(all_auc_frm,aes(x=gene_name,y=AUC,group=method,color=method))+
+  geom_line()+
+  geom_point(shape=16)+
+  facet_wrap(.~gene_num,scales = "free_y")
+p
+
+saveRDS(all_auc_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/grn_method_comparison/three_grn_method_auc_diff_aucMaxRank.rds")
+
+
+auc_frm_1 <- all_auc_frm %>% filter(gene_num==1000)
+auc_frm_1 <- auc_frm_1[order(auc_frm_1$AUC),]
+p <- ggplot(auc_frm_1,aes(x=gene_name,y=AUC,group=method,color=method))+
+  geom_line()+
+  geom_point(shape=16)+
+  facet_wrap(.~gene_num,scales = "free_y")
+p
+
+
+
+
+
+```
+
+#### 2.2 PIDC SCENIC dorothea mat comparison
+
+```{r}
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+atfr <- scater::logNormCounts(atfr)
+PIDC_mat <- as.matrix(GRN(atfr,"pidc"))
+PIDC_regulon <- PIDC::matToNet(PIDC_mat)
+saveRDS(PIDC_regulon,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/PIDC_aracne_regulons.rds")
+GENIE3_mat <- as.matrix(GRN(atfr,"genie3"))
+PCOR_mat <- abs(as.matrix(GRN(atfr,"pcor")))
+SCLINK_mat <- as.matrix(GRN(atfr,"sclink"))
+
+#---dorothea
+TF_genes <- unique(colData(atfr)$gene)
+doro_regulon <- dorothea_regulons$hs_regulons
+doro_regulon <- dfToList(doro_regulon,tf_col = "tf",target_col = "target")
+doro_regulon <- doro_regulon[intersect(TF_genes,names(doro_regulon))]
+library(dorothea)
+col_data <- as.data.frame(colData(atfr))
+regulons <- dorothea::dorothea_hs %>% filter(tf %in% col_data$gene)
+exprMatr <- as.matrix(assay(atfr,"logcounts"))
+tf_activities <- run_viper(exprMatr, regulons, options =  list(method = "scale", minsize = 4, 
+                                                  eset.filter = FALSE, cores = 1, verbose = TRUE))
+TFs <- row.names(tf_activities)
+dorothea_auroc <- list()
+for(i in TFs){
+  col_data_i <- col_data[col_data$gene %in% c(i,'CTRL'),]
+  prediction <- tf_activities[i,row.names(col_data_i),drop=TRUE]
+  labels <- col_data_i[names(prediction),"gene"]
+  label <- ifelse(labels=="CTRL",1,-1)
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  dorothea_auroc[[i]] <- unlist(perf@y.values)
+}
+dorothea_AUC <- unlist(dorothea_auroc)
+saveRDS(dorothea_AUC,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/dorothea/ROC_AUC_perform.rds")
+PIDC_TF_AUC$dorothea <- dorothea_AUC[row.names(PIDC_TF_AUC)]
+
+
+
+#---
+PIDC_regulon <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/PIDC_aracne_regulons.rds")
+PIDC_regulon <- split(as.character(PIDC_regulon$target),PIDC_regulon$regulator)
+pidc_regulon <- PIDC_regulon[intersect(TF_genes,names(PIDC_regulon))]
+
+atfr <- regulonActivity(atfr, method="aucell", gene_list=pidc_regulon, use_assay="logcounts",ncores=1)
+viper_mat <- assay(altExp(atfr,"viper"))
+viper_mat <- assay(altExp(atfr,"ssgsea"))
+viper_mat <- assay(altExp(atfr,"aucell"))
+
+TFs <- row.names(viper_mat)
+pidc_auroc <- list()
+for(i in TFs){
+  col_data_i <- col_data[col_data$gene %in% c(i,'CTRL'),]
+  prediction <- viper_mat[i,row.names(col_data_i),drop=TRUE]
+  labels <- col_data_i[names(prediction),"gene"]
+  label <- ifelse(labels=="CTRL",1,-1)
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  pidc_auroc[[i]] <- unlist(perf@y.values)
+}
+pidc_AUC <- unlist(pidc_auroc)
+
+```
+
+
+
+
+
+#### 1.3 GRN comparison
+
+```{r}
+library(scATFR)
+count_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_matrix.txt",sep="\t",header=T,row.names = 1)
+col_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/expression_data/diff_count_metadata.txt",sep="\t",header=T)
+row.names(col_data) <- col_data$cell
+count_mat_filter <- count_mat[apply(count_mat,1,function(x){length(x[x>0])>=10}),]
+
+atfr <- scATFR(exp_data = count_mat_filter,col_data = col_data)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/objects/atfr_init.rds")
+atfr <- inferGRNs(atfr, method="pidc", ncores=4)
+atfr <- inferGRNs(atfr, method="pcor", ncores=4)
+atfr <- inferGRNs(atfr, method="genie3", use_regulator=unique(col_data$gene),ncores=4)
+atfr <- inferGRNs(atfr, method="sclink", ncores=4)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+
+library(dplyr)
+regulons <- dorothea_regulons$hs_regulons
+regulons <- dfToList(df = regulons, tf_col = "tf",target_col = "target")
+atfr <- scATFR(exp_data = count_mat,col_data = col_data, regulons = regulons)
+st <- Sys.time()
+atfr <- inferGRNs(x = atfr, method="sctenifoldnet", ncores=6)
+Sys.time()-st
+
+atfr <- filterRegulons(x=atfr, ncores=6)
+atfr <- regulonActivity(atfr, method="viper",ncores=6)
+atfr_mat <- assay(altExp(atfr,"atfr"))
+
+counts <- read.table("diff_count_matrix.txt",sep="\t",header=T,row.names=1)
+counts <- counts[apply(counts,1,function(x){length(x[which(x>0)])>=10}),]
+PIDC_GRN <- PIDC::PIDC(expMat = as.matrix(counts), ncores = 16)
+
+```
+
+
+#### 2.1 regulon analysis 
+
+```{r}
+hs_regulon <- readRDS(system.file("./inst/extdata/hs_pantissue_network.rds",package = "scATFR"))
+col_data <- colData(atfr)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CROPseq/GRNs/atfr_with_grns.rds")
+PIDC_GRN <- GRN(atfr,"pidc")
+
+
+hs_regulon_tf <- hs_regulon %>% filter(tf %in% TFs)
+pidc_mat <- GRN(atfr,"pidc")[TFs,] %>%as.matrix(.) %>% reshape2::melt(.)
+hs_regulon_tf <- integraNets(grnNets = list(pidc_mat,hs_regulon_tf),return_sig = T)
+hs_regulon_tf <- getWeightThreshold(hs_regulon_tf)
+
+hs_regulon_list <- split(hs_regulon_tf$target,hs_regulon_tf$tf)
+
+atfr <- filterRegulons(x=atfr, gene_list=hs_regulon_list,use_grn="pidc")
+atfr <- regulonActivity(atfr, method="viper")
+atfr <- regulonActivity(atfr, method="aucell")
+atfr <- regulonActivity(atfr, method="ssgsea")
+
+atfr_mat <- assay(altExp(atfr,"viper"))
+
+
+```
+
+#### 2.2 ROC
+
+```{r}
+get_pref <- function(mat, col_data, grn_method="pidc", act_method="viper", filter=TRUE){
+  cells <- colnames(mat)
+  row.names(col_data) <- col_data$cell
+  labels <- col_data[cells,"gene"]
+  TF_gene <- setdiff(labels,"CTRL")
+  names(labels) <- cells
+  label <- ifelse(labels=="CTRL",1,-1)
+  prediction <- mat[1,names(labels)]
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc_value <- perf@y.values[[1]]
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(TF=rep(TF_gene,length(perf@x.values[[1]])),
+                        FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc_value,length(perf@x.values[[1]])),
+                        GRNs = rep(grn_method,length(perf@x.values[[1]])),
+                        Activity = rep(act_method, length(perf@x.values[[1]])),
+                        withFilter = rep(filter,length(perf@x.values[[1]])))
+  out_res
+}
+
+get_pref_mat <- function(x, i="viper",...){
+  act_mat <- assay(altExp(x,i))
+  TFs <- row.names(act_mat)
+  col_data <- colData(x)
+  row.names(col_data) <- col_data$cells
+  .get_mat <- function(tf,mat,col_data){
+    case_cells <- col_data[col_data$gene %in% tf,"cell"]
+    control_cells <- col_data[col_data$gene %in% 'CTRL',"cell"]
+    mat[tf,c(control_cells,case_cells),drop=FALSE]
+  }
+  act_mat_list <- lapply(TFs,.get_mat,mat=act_mat,col_data=col_data)
+  names(act_mat_list) <- TFs
+  act_pref_list <- lapply(act_mat_list,get_pref,act_method=i,col_data=col_data,...)
+  act_pref_list
+}
+
+#---pidc
+viper_pref <- get_pref_mat(x = atfr,grn_method="pidc",i = "viper")
+viper_pref <- do.call(rbind,viper_pref)
+aucell_pref <- get_pref_mat(x = atfr,grn_method="pidc",i = "aucell")
+aucell_pref <- do.call(rbind,aucell_pref)
+ssgsea_pref <- get_pref_mat(x = atfr,grn_method="pidc",i = "ssgsea")
+ssgsea_pref <- do.call(rbind,ssgsea_pref)
+
+
+
+act_mat <- assay(altExp(atfr,"viper"))
+plot_mat <- as.data.frame(colData(atfr))
+plot_mat <- cbind(plot_mat, t(act_mat)[row.names(plot_mat),])
+
+i <- 'EGR1'
+i <- "ETS1"
+i <- "FOS"
+i <- "RUNX2"
+i <- "JUN"
+plot_frm <- plot_mat %>% filter(gene %in% c(i,"CTRL"))
+library(ggplot2)
+p <- ggplot(plot_frm,aes_string(x='gene',y=i))+
+  geom_jitter()
+p
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

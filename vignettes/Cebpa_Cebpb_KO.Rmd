@@ -1,0 +1,73 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+####1.1 load data
+```{r}
+UMIs <- read.delim("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Cebpa_KO/GSE72857_umitab.txt.gz",sep="\t",header=T)
+cell_infor <- read.delim("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Cebpa_KO/GSE72857_experimental_design.txt/GSE72857_experimental_design.txt",header=T,sep="\t")
+atfr <- scATFR(exp_data = UMIs,col_data = cell_infor)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/exp_data/atfr.rds")
+saveRDS(UMIs,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/exp_data/UMI_matrix.rds")
+saveRDS(cell_infor,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/exp_data/cell_col_data.rds")
+
+Cebpa_col_data <- cell_infor %>% filter(Batch_desc %in% c("Cebpa KO", "Cebpa control"))
+row.names(Cebpa_col_data) <- Cebpa_col_data$Well_ID
+Cebpa_UMI <- UMIs[,Cebpa_col_data$Well_ID]
+Cebpa_UMI_filter <- Cebpa_UMI[apply(Cebpa_UMI,1,function(x){length(x[which(x>0)])>=10}),]
+
+atfr_Cebpa <- scATFR(exp_data = Cebpa_UMI_filter,col_data = Cebpa_col_data)
+saveRDS(atfr_Cebpa,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpa_init.rds")
+
+Cebpe_col_data <- cell_infor %>% filter(Batch_desc %in% c("Cebpe KO", "Cebpe control"))
+row.names(Cebpe_col_data) <- Cebpe_col_data$Well_ID
+Cebpe_UMI <- UMIs[,Cebpe_col_data$Well_ID]
+Cebpe_UMI_filter <- Cebpe_UMI[apply(Cebpe_UMI,1,function(x){length(x[which(x>0)])>=10}),]
+atfr_Cebpe <- scATFR(exp_data = Cebpe_UMI_filter,col_data = Cebpe_col_data)
+saveRDS(atfr_Cebpe,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpe_init.rds")
+
+```
+
+
+####1.2 calculation of GRNs
+
+```{r}
+atfr_Cebpa <- inferGRNs(x = atfr_Cebpa,method="pidc",ncores=6)
+atfr_Cebpa <- inferGRNs(x = atfr_Cebpa,method="pcor",ncores=6)
+atfr_Cebpa <- inferGRNs(x = atfr_Cebpa,method="genie3", ncores=6, use_regulator=c("Cebpa","Cebpe"))
+saveRDS(atfr_Cebpa,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpa.rds")
+
+atfr_Cebpe <- inferGRNs(x = atfr_Cebpe,method="pidc",ncores=6)
+atfr_Cebpe <- inferGRNs(x = atfr_Cebpe,method="pcor",ncores=6)
+atfr_Cebpe <- inferGRNs(x = atfr_Cebpe,method="genie3", ncores=6, use_regulator=c("Cebpa","Cebpe"))
+saveRDS(atfr_Cebpe,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpe.rds")
+
+Cebpa_PIDC_net <- matToNet(weightMat = as.matrix(GRN(atfr_Cebpa,"pidc")))
+saveRDS(Cebpa_PIDC_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/Cebpa_PIDC_net.rds")
+
+Cebpe_PIDC_net <- matToNet(weightMat = as.matrix(as.matrix(GRN(atfr_Cebpe,"pidc"))))
+saveRDS(Cebpe_PIDC_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/Cebpe_PIDC_net.rds")
+
+```
+
+#### 1.3 Cebpa test
+
+```{r}
+atfr_Cebpa <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpa.rds")
+Cebpa_PIDC_net <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/Cebpa_PIDC_net.rds")
+
+
+
+
+
+```
+
+#### 1.4 Cebpe
+
+```{r}
+
+atfr_Cebpe <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Cebpa_KO/objects/atfr_Cebpe.rds")
+
+```
+

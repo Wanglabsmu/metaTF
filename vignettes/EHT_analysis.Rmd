@@ -1,0 +1,289 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/23"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="D:/HSC_Autophagy/2.HSC_formation") 
+```
+
+### 1.merge expression data
+```{r}
+library(data.table)
+iHEC_sample2Stage = read.table("D:/HSC_Autophagy/2.HSC_formation/sample_infor/iHEC_sample2_stage.txt",sep="\t",header=T,stringsAsFactors = F)
+row.names(iHEC_sample2Stage) = iHEC_sample2Stage[,1]
+
+merge_exp <- function(indir = inPath){
+files = list.files(indir)
+samples = files
+#------read files
+gene_exp = fread(file.path(indir,samples[1],"quant.genes.sf"),sep="\t",header=T,data.table=F)
+gene_counts = gene_exp[,c("Name","NumReads")]
+colnames(gene_counts)[2] = samples[1]
+gene_tpm = gene_exp[,c("Name","TPM")]
+colnames(gene_tpm)[2] = samples[1]
+
+transcript_exp = fread(file.path(indir,samples[1],"quant.sf"),sep="\t",header=T,data.table=F)
+transcript_counts = transcript_exp[,c("Name","NumReads")]
+colnames(transcript_counts)[2] = samples[1]
+transcript_tpm = transcript_exp[,c("Name","TPM")]
+colnames(transcript_tpm)[2] = samples[1]
+
+for(i in samples[-1]){
+gene_in = fread(file.path(indir,i,"quant.genes.sf"),sep="\t",header=T,data.table=F)
+g_counts = gene_in[,c("Name","NumReads")]
+colnames(g_counts)[2] = i
+g_tpm = gene_in[,c("Name","TPM")]
+colnames(g_tpm)[2] = i
+
+transcript_in = fread(file.path(indir,i,"quant.sf"),sep="\t",header=T,data.table=F)
+t_counts = transcript_in[,c("Name","NumReads")]
+colnames(t_counts)[2] = i
+t_tpm = transcript_in[,c("Name","TPM")]
+colnames(t_tpm)[2] = i
+
+gene_counts = merge(gene_counts,g_counts,by="Name",all=T,sort=F)
+gene_tpm = merge(gene_tpm,g_tpm,by="Name",all=T,sort=F)
+transcript_counts = merge(transcript_counts,t_counts,by="Name",all=T,sort=F)
+transcript_tpm = merge(transcript_tpm,t_tpm,by="Name",all=T,sort=F)
+}
+rm(list=c("g_counts", "g_tpm", "t_counts","t_tpm"))
+out_list = list(gene_counts = gene_counts, gene_tpm = gene_tpm,
+transcript_counts = transcript_counts, transcript_tpm = transcript_tpm)
+return(out_list)
+}
+
+inPath <- "D:/HSC_Autophagy/2.HSC_formation/download_data/salmon_res"
+outPath = "D:/HSC_Autophagy/2.HSC_formation/merged_exp/salmon_res"
+dir.create(outPath, recursive = T)
+
+all_gene_tab = merge_exp(indir = inPath)
+all_gene_counts = all_gene_tab$gene_counts
+fwrite(all_gene_counts,file.path(outPath,"iHEC_gene_counts.txt"),sep="\t")
+all_gene_TPM = all_gene_tab$gene_tpm
+fwrite(all_gene_TPM,file.path(outPath,"iHEC_gene_TPM.txt"),sep="\t")
+all_transcript_counts = all_gene_tab$transcript_counts
+fwrite(all_transcript_counts,file.path(outPath,"iHEC_transcript_counts.txt"),sep="\t")
+all_transcript_TPM = all_gene_tab$transcript_tpm
+fwrite(all_transcript_TPM,file.path(outPath,"iHEC_transcript_TPM.txt"),sep="\t")
+
+#------gene counts
+all_gene_counts$Name = substr(all_gene_counts$Name,1,18)
+all_gene_counts_out = all_gene_counts[,c("Name",row.names(iHEC_sample2Stage))]
+colnames(all_gene_counts_out)[1] = "gene_id"
+colnames(all_gene_counts_out)[-1] = iHEC_sample2Stage[colnames(all_gene_counts_out)[-1],"sample_name"]
+fwrite(all_gene_counts_out,"D:/HSC_Autophagy/2.HSC_formation/merged_exp/iHEC_gene_counts.txt",sep="\t")
+
+all_gene_TPM$Name = substr(all_gene_TPM$Name,1,18)
+all_gene_TPM_out = all_gene_TPM[,c("Name",row.names(iHEC_sample2Stage))]
+colnames(all_gene_TPM_out)[1] = "gene_id"
+colnames(all_gene_TPM_out)[-1] = iHEC_sample2Stage[colnames(all_gene_TPM_out)[-1],"sample_name"]
+
+fwrite(all_gene_TPM_out,"D:/HSC_Autophagy/2.HSC_formation/merged_exp/iHEC_gene_TPM.txt",sep="\t")
+
+```
+
+### 2. merge expression data
+
+```{r}
+sample2Stage <- read.table("./sample_infor/sample2stage.txt",sep="\t",header=T)
+row.names(sample2Stage) <- sample2Stage$sample
+EHT_counts <- fread("D:/HSC_Autophagy/expression_data/merged_exp/salmon_res/all_gene_counts.txt",sep="\t",header=T,data.table = F)
+EHT_counts$Name = substr(EHT_counts$Name,1,18)
+EHT_counts = EHT_counts[,c("Name",row.names(sample2Stage))]
+colnames(EHT_counts)[1] = "gene_id"
+write.table(EHT_counts,"./merged_exp/salmon_res/HEC_gene_counts.txt",sep="\t",quote=F)
+
+iHEC_counts <- fread("D:/HSC_Autophagy/2.HSC_formation/merged_exp/iHEC_gene_counts.txt",sep="\t",header=T,data.table = F)
+iHEC_EHT_tab <- merge(EHT_counts, iHEC_counts, by="gene_id")
+
+iHEC_sample2Stage_1 <- iHEC_sample2Stage[,-1]
+colnames(iHEC_sample2Stage_1)[1]<- "sample"
+sample2Stage <- sample2Stage[,1:2]
+merged_sample2stage <- rbind(sample2Stage, iHEC_sample2Stage_1)
+write.table(merged_sample2stage,"./sample_infor/merged_sample2stage.txt",sep="\t",quote=F)
+stages <- c("EC","iHEC","T1_pre_HSC","T2_pre_HSC","E12","E14","Adult_HSC","D14_iHSC","D17_iHSC")
+merged_sample2stage_filter <- merged_sample2stage[merged_sample2stage$stage %in% stages,]
+write.table(merged_sample2stage_filter,"./sample_infor/sample2stage.txt",sep="\t",quote=F,row.names=F)
+
+iHEC_EHT_filter <- iHEC_EHT_tab[,c("gene_id",merged_sample2stage_filter$sample)]
+write.table(iHEC_EHT_filter,"./merged_exp/EHT_iHEC_merge_gene_counts.txt",sep="\t",quote=F,row.names=F)
+
+EHT_TPM <- fread("D:/HSC_Autophagy/expression_data/merged_exp/salmon_res/all_gene_TPM.txt",sep="\t",header=T,data.table = F)
+EHT_TPM$Name = substr(EHT_TPM$Name,1,18)
+EHT_TPM = EHT_TPM[,c("Name",row.names(sample2Stage))]
+colnames(EHT_TPM)[1] = "gene_id"
+
+iHEC_TPM <- all_gene_TPM_out
+
+EHT_iHEC_TPM <- merge(EHT_TPM, iHEC_TPM,by="gene_id")
+iHEC_EHT_TPM_filter <- EHT_iHEC_TPM[,c("gene_id",merged_sample2stage_filter$sample)]
+write.table(iHEC_EHT_TPM_filter,"./merged_exp/EHT_iHEC_merge_gene_TPM.txt",sep="\t",quote=F,row.names=F)
+
+
+#---merge by gene name
+gene_infor <- fread("../ref_genome/gencode.vM25.gene.infor.rm.version.tsv",sep="\t",data.table=F)
+row.names(gene_infor) <- gene_infor$gene_id
+
+iHEC_EHT_filter_by_name <- iHEC_EHT_filter[,-1]
+row.names(iHEC_EHT_filter_by_name) <- iHEC_EHT_filter[,1]
+gene_infor <- gene_infor[row.names(iHEC_EHT_filter_by_name),]
+iHEC_EHT_filter_symb <- apply(iHEC_EHT_filter_by_name,2,function(x){tapply(x,gene_infor[names(x),"gene_name"],sum)})
+write.table(iHEC_EHT_filter_symb,"./merged_exp/EHT_iHEC_merged_gene_counts.txt",sep="\t",quote=F,row.names=T)
+
+iHEC_EHT_TPM_filter_by_name <- iHEC_EHT_TPM_filter[,-1]
+row.names(iHEC_EHT_TPM_filter_by_name) <- iHEC_EHT_TPM_filter[,1]
+gene_infor <- gene_infor[row.names(iHEC_EHT_TPM_filter_by_name),]
+iHEC_EHT_TPM_filter_symb <- apply(iHEC_EHT_TPM_filter_by_name,2,function(x){tapply(x,gene_infor[names(x),"gene_name"],sum)})
+write.table(iHEC_EHT_TPM_filter_symb,"./merged_exp/EHT_iHEC_merged_gene_TPM.txt",sep="\t",quote=F,row.names=T)
+
+```
+
+### 3. start analysis
+
+```{r}
+EHT_matrix <- read.table("./merged_exp/EHT_iHEC_merged_gene_TPM.txt",sep="\t",header=T,row.names=1)
+col_data <- read.table("./sample_infor/sample2stage.txt",sep="\t",header=T)
+row.names(col_data) <- col_data$sample
+EHT_stages <- c("EC","T1_pre_HSC","T2_pre_HSC","E12","E14","Adult_HSC")
+EHT_col_data <- col_data[col_data$stage %in% EHT_stages,]
+EC_Adult_matrix <- EHT_matrix[,EHT_col_data$sample]
+
+regulons <- dfToList(dorothea_regulons$mm_regulons,tf_col = "tf",target_col = "target")
+regulons <- regulons[c("Runx1","Hoxa9")]
+#1.GRNs
+stages <- c("iHEC","T1_pre_HSC")
+iHEC_col_data <- col_data[col_data$stage %in% stages,]
+atfr <- scATFR(exp_data = EHT_matrix[,iHEC_col_data$sample], col_data = iHEC_col_data, regulons = regulons)
+#---run GRNs
+run_time <- list()
+for (i in c( "pcor", "sclink","genie3")){
+  st <- Sys.time()
+  atfr <- inferGRNs(x=atfr, method = i, ncores=4)
+  diff_time <- Sys.time()-st
+  run_time[[i]] <- diff_time
+}
+dir.create("../ext_data/Runx1_Hoxa9_OE/GRN/",recursive = T)
+saveRDS(atfr,"../ext_data/Runx1_Hoxa9_OE/GRN/grns.rds")
+saveRDS(run_time,"../ext_data/Runx1_Hoxa9_OE/GRN/grns_run_time.rds")
+
+#2.regulon activity
+atfr <- filterRegulons(atfr,use_grn="genie3")
+for (j in c("viper", "aucell", "ssgsea")){
+  st <- Sys.time()
+  atfr <- regulonActivity(atfr, method=j, ncores=1)
+  diff_time <- Sys.time()-st
+  run_time[[j]] <- diff_time
+}
+altExps(atfr)
+
+# performance
+
+mat <- assay(altExp(atfr,e = "viper"))
+mat <- assay(altExp(atfr,e = "aucell"))
+mat <- assay(altExp(atfr,e = "ssgsea"))
+
+labels <- colData(atfr)[['stage']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="iHEC",1,-1)
+prediction <- mat[1,names(labels)]*(-1)
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred,"auc")
+perf@y.values
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+```
+
+### 4 Running SCENIC with Nkx2-ko data
+
+```{r}
+library(GENIE3)
+library(RcisTarget)
+library(AUCell)
+library(data.table)
+
+hs_motif_ranking <- importRankings("../ext_data/cisTarget_databases/hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+hs_annotation <- fread("../ext_data/cisTarget_databases/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",sep="\t")
+mm_motifranking <- importRankings("../ext_data/cisTarget_databases/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+mm_annotation <- data.table::fread("../ext_data/cisTarget_databases/motifs-v8-nr.mgi-m0.001-o0.0.tbl",sep="\t")
+
+#atfr <- readRDS("../ext_data/Nkx2-1_KO/GRNs/GRNs_all_atfr.rds")
+exprMatr <- assay(atfr)
+grn_tab <- GRN(atfr,"genie3")[c("Runx1","Hoxa9"),]
+grn_frm <- GENIE3::getLinkList(as.matrix(grn_tab),threshold = 0)
+top_num <- round(0.05*ncol(grn_tab))
+grn_frm <- grn_frm %>% group_by(regulatoryGene) %>% top_n(top_num,weight)
+grn_list <- split(grn_frm$targetGene,as.character(grn_frm$regulatoryGene))
+grn_list <- lapply(grn_list,function(x){intersect(x,mm_annotation$TF)})
+
+grn_cistarget_res <- cisTarget(geneSets = grn_list,motifRankings = mm_motifranking, motifAnnot = mm_annotation, highlightTFs=c("Runx1","Hoxa9"),nesThreshold = 0)
+grn_cistarget <- grn_cistarget_res[TFinDB=="**",][enrichedGenes!="",]
+grn_targets <- unique(unlist(strsplit(grn_cistarget[["enrichedGenes"]],split="\\;")))
+grn_regulon <- split(grn_targets,c("Runx1","Hoxa9"))
+
+#---get expression ranks
+cells_rankings <- AUCell_buildRankings(exprMatr, nCores=1, plotStats=FALSE)
+cells_AUC <- AUCell_calcAUC(geneSets=grn_regulon, rankings = cells_rankings,normAUC = TRUE)
+auc_value <- getAUC(cells_AUC)
+saveRDS(auc_value,"../ext_data/Nkx2-1_KO/SCENIC/AUC_value.rds")
+
+#------performance
+mat <- auc_value
+
+labels <- colData(atfr)[['stage']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="T1_pre_HSC",1,-1)
+prediction <- mat[1,names(labels)]*(-1)
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred,"auc")
+perf@y.values
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+
+```
+
+
+
+#### 3.1 psedutime analysis
+```{r}
+library(monocle3)
+cds <- new_cell_data_set(expression_data = as.matrix(EC_Adult_counts), cell_metadata =  EHT_col_data)
+cds <- preprocess_cds(cds, num_dim = 50, method = "PCA")
+plot_cells(cds, reduction_method = "PCA", color_cells_by="stage")
+cds <- reduce_dimension(cds, reduction_method = "tSNE", preprocess_method = "PCA")
+plot_cells(cds, reduction_method = "tSNE", color_cells_by="stage")
+cds <- reduce_dimension(cds, reduction_method = "UMAP", preprocess_method = "PCA")
+plot_cells(cds, reduction_method = "UMAP", color_cells_by="stage")
+# Cluster the cells
+cds <- cluster_cells(cds)
+# Learn a graph
+cds <- learn_graph(cds,use_partition = FALSE)
+# Order cells
+cds <- order_cells(cds)
+plot_cells(cds, color_cells_by = "stage",show_trajectory_graph = TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

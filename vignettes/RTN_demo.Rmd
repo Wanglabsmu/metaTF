@@ -1,0 +1,23 @@
+---
+title: "RTN"
+author: "Puwen Tan"
+date: "2021/6/24"
+output: html_document
+---
+
+```{r}
+BiocManager::install("RTN")
+library(RTN)
+data(tniData)
+tfs <- c("FOXM1","E2F2","E2F3","RUNX2","PTTG1")
+rtni <- tni.constructor(expData = tniData$expData, 
+                        regulatoryElements = tfs, 
+                        rowAnnotation = tniData$rowAnnotation, 
+                        colAnnotation = tniData$colAnnotation)
+rtni <- tni.permutation(rtni, nPermutations = 100)
+rtni <- tni.bootstrap(rtni)
+rtni <- tni.dpi.filter(rtni)
+
+rtni@results$tn.ref
+```
+

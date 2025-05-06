@@ -1,0 +1,56 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+```{r}
+WT_mat <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Taf4_KO/GSE151365_RAW/GSM4576266_wt_raw_counts.tsv.gz",sep="\t",header=T,row.names=1)
+colnames(WT_mat) <- paste("WT_",colnames(WT_mat),sep="")
+WT <- CreateSeuratObject(counts = WT_mat, project = "WT")
+
+KO1_mat <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Taf4_KO/GSE151365_RAW/GSM4576267_ko1_raw_counts.tsv.gz",sep="\t",header=T,row.names=1)
+colnames(KO1_mat) <- paste("KO1_",colnames(KO1_mat),sep="")
+KO1 <- CreateSeuratObject(counts = KO1_mat, project = "KO1")
+
+KO5_mat <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Taf4_KO/GSE151365_RAW/GSM4576268_ko5_raw_counts.tsv.gz",sep="\t",header=T,row.names=1)
+colnames(KO5_mat) <- paste("KO5_",colnames(KO5_mat),sep="")
+KO5 <- CreateSeuratObject(counts = KO5_mat, project = "KO5")
+
+
+Taf4_KO <- merge(x=WT,y=list(KO1,KO5),project="Taf4_KO")
+
+
+Taf4_KO[["percent.mt"]] <- PercentageFeatureSet(Taf4_KO, pattern = "^mt-")
+
+plot1 <- FeatureScatter(Taf4_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(Taf4_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(Taf4_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,group.by = NULL)
+Taf4_KO <- subset(Taf4_KO, subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10)
+VlnPlot(Taf4_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,group.by = NULL)
+
+
+Taf4_KO <- NormalizeData(Taf4_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+Taf4_KO <- FindVariableFeatures(Taf4_KO, selection.method = "vst", nfeatures = 2000)
+Taf4_KO <- ScaleData(Taf4_KO, use.umi=T)
+Taf4_KO <- RunPCA(Taf4_KO, features = VariableFeatures(object = Taf4_KO))
+DimPlot(Taf4_KO, reduction = "pca")
+Taf4_KO <- FindNeighbors(Taf4_KO, dims = 1:50)
+Taf4_KO <- FindClusters(Taf4_KO)
+Taf4_KO <- RunTSNE(object = Taf4_KO, dims.use = 1:50)
+DimPlot(Taf4_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(Taf4_KO, reduction = "tsne",features = "Taf4",split.by = "orig.ident")
+
+Taf4_KO <- RunUMAP(Taf4_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(Taf4_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Taf4_KO, reduction = "umap",features = "Taf4")
+FeaturePlot(Taf4_KO, reduction = "umap",features = "Taf4",split.by = "orig.ident")
+VlnPlot(Taf4_KO, features = c("Taf4"), group.by = "orig.ident",ncol = 3)
+
+
+
+```
+

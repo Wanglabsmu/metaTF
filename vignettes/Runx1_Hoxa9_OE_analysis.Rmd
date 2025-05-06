@@ -1,0 +1,439 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1.1 load data
+
+```{r}
+data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/GRN/grns.rds")
+counts <- as.matrix(counts(data))
+counts_filter <- counts[apply(counts,1,function(x){length(x[which(x>0)])>=5}),]
+coldata_filter <- colData(data)
+
+atfr <- scATFR(exp_data = counts_filter,col_data = coldata_filter)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/atfr_init.rds")
+time <- list()
+atfr <- readRDS("/media/hobart/s4T2/tpw/3.scATFR/ext_data/Runx1_Hoxa9_OE/exp_data/atfr_init.rds")
+for(i in c("pcor", "pidc", "sclink", "genie3")){
+    st <- proc.time()
+    atfr <- inferGRNs(x = atfr, method= i, ncores=16)
+    diff_st <- proc.time()-st
+    names(diff_st) <- i
+    time[[i]] <- diff_st
+    saveRDS(atfr,paste("/media/hobart/s4T2/tpw/3.scATFR/ext_data/Runx1_Hoxa9_OE/GRNs/",i,"_atfr.rds",sep=""))
+}
+
+mm_tfs <- intersect(TF_Symbols$mouse,row.names(atfr))
+st <- proc.time()
+atfr <- inferGRNs(x = atfr, method= "genie3", use_regulator=mm_tfs, ncores=20)
+diff_st <- proc.time()-st
+time[["genie3"]] <- diff_st
+saveRDS(atfr, paste("/media/hobart/s4T2/tpw/3.scATFR/ext_data/Runx1_Hoxa9_OE/GRNs/genie3_atfr.rds",sep=""))
+
+```
+
+#### 1.2 import grns
+
+```{r}
+library(dplyr)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/genie3_grns.rds")
+GRNs(atfr)
+dorothea_mm <- dorothea_regulons$mm_regulons
+dorothea_list <- dfToList(dorothea_mm,tf_col = 'tf',target_col = "target")
+dorothea_list_num <- sapply(dorothea_list,function(x){length(intersect(x,row.names(atfr)))})
+dorothea_list <- dorothea_list[dorothea_list_num>10]
+
+get_auc <- function(methods, x=atfr, tf_regulon = dorothea_list){
+    grns <- GRN(x,i = methods)
+    grns <- as.matrix(grns)
+    tfs <- intersect(row.names(grns),names(tf_regulon))
+    grns <- grns[tfs,]
+    auc <- runAUCell(exp_mat = t(grns), gene_list=tf_regulon)
+    tfs <- intersect(row.names(auc),tfs)
+    auc_res <- diag(auc[tfs,tfs])
+    auc_res
+}
+methods <- c("pidc","genie3","pcor","sclink")
+auc_res <- pbapply::pblapply(methods,get_auc)
+names(auc_res) <- methods
+sapply(auc_res,length)
+
+overlap_tfs <- names(auc_res$genie3)
+auc_value_tab <- lapply(auc_res,function(x,gene=overlap_tfs){
+    x[gene]
+})
+auc_value_tab <- as.data.frame(do.call(cbind,auc_value_tab))
+auc_value_res1 <- auc_value_tab$pidc-auc_value_tab$genie3
+auc_value_res2 <- auc_value_tab$pidc-auc_value_tab$sclink
+auc_value_res3 <- auc_value_tab$pidc-auc_value_tab$pcor
+auc_value_res4 <- auc_value_tab$genie3-auc_value_tab$sclink
+apply(auc_value_tab,2,median)
+ks.test(auc_value_tab$pidc,auc_value_tab$pcor)
+ks.test(auc_value_tab$pidc,auc_value_tab$genie3)
+
+
+auc_value_tab <- auc_value_tab[rowSums(auc_value_tab)>0,]
+auc_value_tab_melt <- reshape2::melt(t(auc_value_tab))
+colnames(auc_value_tab_melt) <- c("method","TF","AUC")
+
+plot_frm <- auc_value_tab_melt
+#------set mytheme
+library(ggplot2)
+text_size = 8
+line_size = 0.5
+mytheme <- theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA),
+panel.grid.major = element_line(size=0.25*line_size, linetype = 8, color = "lightgray"),
+axis.ticks = element_line(size=line_size),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45,hjust=1,vjust=1,color="black"), 
+axis.text.y= element_text(size=text_size, color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+library(plyr)
+plot_ecdf = ddply(plot_frm[,c("method","TF","AUC")], .(method,TF), transform, ecdf = ecdf(AUC)(AUC) )
+text_size = 8
+line_size = 0.5
+plot_ecdf <- plot_ecdf %>% filter(method !="sclink") %>% filter(AUC >0)
+
+p = ggplot(plot_ecdf,aes(x = AUC, y=ecdf, color = method))+
+stat_ecdf(size = line_size)+
+mytheme
+p
+
+library(ggplot2)
+p <- ggplot(plot_frm,aes(x=method,y=AUC,fill=method,color=method,))+
+    geom_violin(width=0.4,color="black")+
+    #geom_jitter(width = 0.1,size=0.01,color="black")+
+    geom_boxplot(width=0.1,outlier.colour = NA,fill=NA,color="black")
+p
+
+saveRDS(plot_ecdf, "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/GRN/figure/three_method_auc.rds")
+
+
+
+
+```
+
+#### 1.3 quality control
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/genie3_grns.rds")
+atfr <- scater::logNormCounts(atfr)
+exp_data <- assay(atfr)
+col_data <- as.data.frame(colData(atfr))
+Runx1_exp <- exp_data[c("Runx1","Hoxa9"),]
+col_data$Runx1 <- Runx1_exp["Runx1",]
+col_data$Hoxa9 <- Runx1_exp["Hoxa9",]
+#saveRDS(col_data,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/quality_control/col_data.rds")
+col_data$stage <- factor(col_data$stage,levels=c("T1_pre_HSC","iHEC"))
+p = ggplot(col_data,aes(x = stage, y=Hoxa9,color = stage))+
+  geom_violin()+
+  geom_jitter(width=0.1,color='black',size=0.2)+
+  mytheme
+p
+
+q = ggplot(col_data,aes(x = stage, y=Runx1,color = stage))+
+  geom_violin()+
+  geom_jitter(width=0.1,color='black',size=0.2)+
+  mytheme
+q
+
+p+q
+
+ggsave(filename = "Runx1_hoxa9_expression.pdf", plot = p+q, device = "pdf", path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/quality_control/figure/", width = 140, height = 50, units = "mm")
+
+
+wilcox.test(col_data[col_data$stage=="iHEC",]$Runx1,col_data[col_data$stage=="T1_pre_HSC",]$Runx1)
+wilcox.test(col_data[col_data$stage=="iHEC",]$Hoxa9,col_data[col_data$stage=="T1_pre_HSC",]$Hoxa9)
+
+
+```
+
+
+
+
+### 2 regulon analysis
+#### 2.1 PIDC only regulon
+
+```{r}
+library(dplyr)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/genie3_grns.rds")
+PIDC_GRN <- GRN(atfr,"pidc")
+
+#---do not using regulons
+#PIDC_regulons <- PIDC::matToNet(weightMat = as.matrix(PIDC_GRN),methods = "aracne")
+#saveRDS(PIDC_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/PIDC_aracne_mat.rds")
+PIDC_regulons <- readRDS('D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/PIDC_aracne_mat.rds')
+PIDC_Runx1_Hoxa9 <- PIDC_regulons %>% filter(regulator %in% c("Runx1","Hoxa9"))
+
+#---using regulons from database
+blood_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_network.txt.gz",sep="\t",header=T)
+blood_network_Runx1_Hoxa9 <- blood_network %>% filter(tf %in% c("Runx1","Hoxa9"))
+#blood_network_Runx1_Hoxa9 <- blood_network %>% filter(tf %in% c("Runx1"))
+
+merge_nets <- integraNets(grnNets = list(PIDC_Runx1_Hoxa9, blood_network_Runx1_Hoxa9),join_type = "full")
+
+PIDC_Runx1_Hoxa9_list <- split(as.character(PIDC_Runx1_Hoxa9$target),as.character(PIDC_Runx1_Hoxa9$regulator))
+atfr <- regulonActivity(x = atfr,gene_list=PIDC_Runx1_Hoxa9_list,method="viper",use_assay="logcounts")
+atfr <- regulonActivity(x = atfr,gene_list=PIDC_Runx1_Hoxa9_list,method="aucell")
+
+act_mat <- assay(altExp(atfr,"viper"))
+PIDC_regulon_pref <- get_pref_mat(atfr)
+
+
+
+#---using regulons from database
+blood_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/Marbach2016_blood_network.txt.gz",sep="\t",header=T)
+blood_network_Runx1_Hoxa9 <- blood_network %>% filter(tf %in% c("Runx1","Hoxa9"))
+#blood_network_Runx1_Hoxa9 <- blood_network %>% filter(tf %in% c("Runx1"))
+
+PIDC_nets <- reshape2::melt(as.matrix(PIDC_GRN[c("Runx1","Hoxa9"),]))
+merge_nets <- integraNets(grnNets = list(PIDC_Runx1_Hoxa9, blood_network_Runx1_Hoxa9),join_type = "left",return_sig = T, min_target_num =50)
+merge_regulons <- split(merge_nets$target,merge_nets$tf)
+atfr <- filterRegulons(atfr,gene_list=merge_regulons)
+atfr <- regulonActivity(x = atfr,method="viper",gene_list=merge_regulons)
+PIDC_regulon_pref <- get_pref_mat(atfr)
+
+
+
+
+
+get_pref <- function(pred_list, grn_method="pidc", act_method="viper", filter=TRUE){
+  prediction <- pred_list[['prediction']]
+  label <- pred_list[['label']]
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc_value <- perf@y.values[[1]]
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc_value,length(perf@x.values[[1]])),
+                        GRNs = rep(grn_method,length(perf@x.values[[1]])),
+                        Activity = rep(act_method, length(perf@x.values[[1]])),
+                        withFilter = rep(filter,length(perf@x.values[[1]])))
+  out_res
+}
+
+get_pref_mat <- function(x, grn_method="pidc",...){
+    act_method <- altExpNames(x)
+    act_mat <- lapply(act_method,function(x, obj){
+        act_mat <- assay(altExp(obj,x))
+        col_data <- colData(obj)
+        label <- ifelse(col_data$stage=="iHEC",1,-1)
+        names(label) <- row.names(col_data)
+        pref <- apply(act_mat,1,function(x,label){
+            predictions <- x
+            labels <- label[names(x)]
+            pred <- ROCR::prediction(predictions = x, labels = labels)
+            perf <- ROCR::performance(pred,"auc")
+            auc <- unlist(perf@y.values)
+            perf <- ROCR::performance(pred,"tpr", "fpr")
+            out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc,length(perf@x.values[[1]])))
+            out_res
+            },label=label)
+    },obj=x)
+    names(act_mat) <- act_method
+    act_mat
+  }
+
+
+```
+
+#### 2.2 PIDC + merged regulon + filter + others
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/genie3_grns.rds")
+atfr <- logNormCounts(atfr)
+#---regulons from database
+endothelial_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/Marbach2016_merged/06_endothelial_cells.txt.gz",sep="\t",header=T)
+Runx1_Hoxa9_endothelial <- endothelial_network %>% filter(tf %in% c("Runx1", "Hoxa9"))
+
+Runx1_Hoxa9_PIDC <- GRN(atfr,"pidc")[c("Runx1","Hoxa9"),] %>% as.matrix() %>% reshape2::melt()
+colnames(Runx1_Hoxa9_PIDC) <- c("tf","target","weight")
+
+#---merge network
+Runx1_Hoxa9_rg <- integraNets(grnNets = list(Runx1_Hoxa9_PIDC, Runx1_Hoxa9_endothelial),join_type = "inner", return_sig = T, norm_weight = T, max_target_num = 2000, min_target_num = 50, maxInter = 10)
+
+Runx1_Hoxa9_regulon <- split(Runx1_Hoxa9_rg$target,Runx1_Hoxa9_rg$tf)
+#---regulons from PIDC
+atfr <- regulonActivity(x = atfr, gene_list=Runx1_Hoxa9_regulon, use_assay="logcounts", method="viper", max_target_num = 500)
+act_mat <- assay(altExp(atfr,"viper"))
+
+apply(act_mat,1,function(x){tapply(x,colData(atfr)[names(x),'stage'],mean)})
+
+act_mat <- as.matrix(counts(atfr)[c("Hoxa9","Runx1"),])
+
+
+act_tbl <- as.data.frame(colData(atfr))
+act_tbl <- cbind(act_tbl,t(act_mat))
+library(ggplot2)
+p <- ggplot(act_tbl)+
+  geom_violin(aes(x=stage,y=Hoxa9))
+p
+p <- ggplot(act_tbl)+
+  geom_violin(aes(x=stage,y=Runx1))
+p
+
+pref_pidc <- get_pref_mat(x = atfr, grn_method = "pidc")
+pref_pidc_tab <-data.table::rbindlist(pref_pidc$viper,idcol = "TF")  
+pref_pidc_tab$method <- rep("scATFR(PIDC)",nrow(pref_pidc_tab))
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/performance/")
+saveRDS(pref_pidc_tab,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/performance/scATFR_PIDC_performance_new.rds")
+
+```
+
+### 2.3.SCENIC flow
+
+```{r}
+library(GENIE3)
+library(RcisTarget)
+library(AUCell)
+library(data.table)
+
+hs_motifranking <- importRankings("../ext_data/cisTarget_databases/hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+hs_annotation <- fread("../ext_data/cisTarget_databases/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",sep="\t")
+mm_motifranking <- importRankings("../ext_data/cisTarget_databases/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+mm_annotation <- fread("../ext_data/cisTarget_databases/motifs-v8-nr.mgi-m0.001-o0.0.tbl",sep="\t")
+
+#atfr <- readRDS("../ext_data/Nkx2-1_KO/GRNs/GRNs_all_atfr.rds")
+atfr <- scater::logNormCounts(atfr)
+#---get regulons
+exprMatr <- assay(atfr,"logcounts")
+grn_tab <- as.matrix(GRN(atfr,"genie3"))[c("Hoxa9","Runx1"),,drop=FALSE]
+grn_frm <- GENIE3::getLinkList(grn_tab,threshold = 0)
+top_num <- round(0.05*ncol(grn_tab))
+grn_frm <- grn_frm %>% group_by(regulatoryGene) %>% top_n(top_num,weight)
+grn_list <- split(as.character(grn_frm$targetGene),as.character(grn_frm$regulatoryGene))
+
+#---run cistarget
+grn_cistarget_res <- cisTarget(geneSets = grn_list,motifRankings = mm_motifranking, motifAnnot = mm_annotation, highlightTFs=row.names(grn_tab),nesThreshold = 0)
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/")
+saveRDS(grn_cistarget_res,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/grn_cistarget_all.rds")
+grn_cistarget <- grn_cistarget_res[TFinDB %in% c("*","**"),][enrichedGenes!="",]
+
+library(stringr)
+filterTFlists <- function(str){
+  str <- str_replace_all(str, "\\s\\(directAnnotation\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity_n_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\;\\s?+$","")
+  str <- str_split(str,pattern = "\\;\\s")
+  return(str)
+}
+grn_cistarget$TF_highConf <- filterTFlists(grn_cistarget$TF_highConf)
+grn_cistarget$TF_lowConf <- filterTFlists(grn_cistarget$TF_lowConf)
+
+grn_cistarget_filter <- grn_cistarget[apply(grn_cistarget,1,function(x){
+  x['geneSet'] %in% unlist(x['TF_highConf']) || x['geneSet'] %in% unlist(x['TF_lowConf'])
+}),]
+grn_cistarget_filter$enrichedGenes <- str_split(grn_cistarget_filter$enrichedGenes,pattern =";")
+grn_regulon <- split(grn_cistarget_filter$enrichedGenes,grn_cistarget_filter$geneSet)
+grn_regulon <- lapply(grn_regulon,function(x){unique(unlist(x))})
+grn_regulon_num <- sapply(grn_regulon,length)
+grn_regulon <- grn_regulon[names(grn_regulon_num[which(grn_regulon_num>4)])]
+#---get expression ranks
+cells_rankings <- AUCell_buildRankings(exprMatr, nCores=1, plotStats=FALSE)
+cells_AUC <- AUCell_calcAUC(geneSets=grn_regulon, rankings = cells_rankings, normAUC = TRUE)
+auc_value <- getAUC(cells_AUC)
+saveRDS(auc_value,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/AUC_value.rds")
+auc_value <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/AUC_value.rds")
+
+#------performance
+mat <- auc_value
+
+pref_frm <- function(prediction, label){
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc <- unlist(perf@y.values)
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc,length(perf@x.values[[1]])))
+}
+
+TFs <- row.names(mat)
+labels <- colData(atfr)[['stage']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="iHEC",1,-1)
+
+Runx1_Hoxa9_res <- lapply(TFs,function(x,mat,label){
+  prediction <- mat[x,]
+  label <- label[names(prediction)]
+  pref_frm(prediction, label)
+},mat=auc_value,label=label)
+names(Runx1_Hoxa9_res) <- TFs
+Runx1_Hoxa9_res <- data.table::rbindlist(Runx1_Hoxa9_res,idcol = "TF")
+Runx1_Hoxa9_res$method <- rep("SCENIC",nrow(Runx1_Hoxa9_res))
+saveRDS(Runx1_Hoxa9_res,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/performance_new.rds")
+
+```
+
+
+### 2.4. dorothea flow
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/objects/genie3_grns.rds")
+atfr <- logNormCounts(atfr)
+library(dorothea)
+regulons <- dorothea_mm %>% filter(tf == c("Runx1","Hoxa9"))
+exprMatr <- assay(atfr,"logcounts")
+tf_activities <- run_viper(input = as.matrix(exprMatr), regulons, options =  list(method = "scale", minsize = 4, 
+                                                  eset.filter = FALSE, cores = 1, verbose = TRUE))
+
+pref_frm <- function(prediction, label){
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auc <- unlist(perf@y.values)
+  perf <- ROCR::performance(pred,"tpr", "fpr")
+  out_res <- data.frame(FPR = perf@x.values[[1]],
+                        TPR = perf@y.values[[1]],
+                        AUC = rep(auc,length(perf@x.values[[1]])))
+}
+
+TFs <- row.names(tf_activities)
+labels <- colData(atfr)[['stage']]
+names(labels) <- row.names(colData(atfr))
+label <- ifelse(labels=="iHEC",1,-1)
+
+dorothea_res <- lapply(TFs,function(x,mat,label){
+  prediction <- mat[x,]
+  label <- label[names(prediction)]
+  pref_frm(prediction, label)
+},mat=tf_activities,label=label)
+names(dorothea_res) <- TFs
+dorothea_res <- data.table::rbindlist(dorothea_res,idcol = "TF")
+dorothea_res$method <- rep("dorothea",nrow(dorothea_res))
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/dorothea/")
+saveRDS(dorothea_res,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/dorothea/performance_new.rds")
+
+```
+
+#### 2.5 all methods plot 
+
+```{r}
+scATFR_methods_tab <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/performance/scATFR_PIDC_performance_new.rds")
+dorothea_methods_tab <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/dorothea/performance_new.rds")
+SCENIC_methods_tab <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/SCENIC/performance_new.rds")
+all_methods <- do.call(rbind,list(scATFR_methods_tab,dorothea_methods_tab,SCENIC_methods_tab))
+
+plot_frm <- all_methods
+plot_frm$method <- factor(plot_frm$method,levels = c("scATFR(PIDC)","SCENIC","dorothea"))
+library(ggplot2)
+p <- ggplot(data = plot_frm,aes(x=FPR,y=TPR, color=method))+
+  geom_line()+
+  facet_wrap(.~TF)+
+  mytheme
+p
+
+ggsave(filename = "Runx1_Hoxa9_3_methods_performance.pdf", plot = p, device = "pdf", path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Runx1_Hoxa9_OE/performance/figure/", width = 110, height = 50, units = "mm")
+
+```
+

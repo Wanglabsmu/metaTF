@@ -1,0 +1,64 @@
+---
+title: "SCENIC_flow"
+author: "Puwen Tan"
+date: "2021/6/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="D:/HSC_Autophagy/Markdown/3.scATFR/scATFR") 
+```
+#### 1. loading SCENIC packages
+
+```{r}
+suppressPackageStartupMessages({
+  library(SCENIC)
+  library(AUCell)
+  library(RcisTarget)
+  library(SCopeLoomR)
+  library(KernSmooth)
+  library(BiocParallel)
+  library(ggplot2)
+  library(data.table)
+  library(grid)
+  library(ComplexHeatmap)
+})
+
+library(SCopeLoomR)
+loomPath <- system.file(package="SCENIC", "examples/mouseBrain_toy.loom")
+loom <- open_loom(loomPath)
+exprMat <- get_dgem(loom)
+cellInfo <- get_cell_annotation(loom)
+close_loom(loom)
+
+
+main_path <- "D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/ext_data/Nkx2-1_KO/SCENIC"
+dir.create(main_path,recursive = TRUE)
+setwd(main_path)
+
+
+count_mat <- read.table("./bencnmark_data/Nkx2-1_KO/Nkx2-1_KO_count_mat.tsv",sep="\t",header=T)
+col_data <- read.table("./bencnmark_data/Nkx2-1_KO/Nkx2-1_KO_colData.tsv",sep="\t",header=T)
+row.names(col_data) <- col_data$cell
+exprMat <- as.matrix(count_mat)
+
+#run scenic
+library(SCENIC)
+dbDir <- "D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/ext_data/cisTarget_databases"
+scenicOptions <- initializeScenic(org="mgi", dbDir=dbDir, nCores=4)
+# scenicOptions@inputDatasetInfo$cellInfo <- "int/cellInfo.Rds"
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") 
+
+
+### Co-expression network
+genesKept <- geneFiltering(exprMat, scenicOptions)
+exprMat_filtered <- exprMat[genesKept, ]
+runCorrelation(exprMat_filtered, scenicOptions)
+exprMat_filtered_log <- log2(exprMat_filtered+1) 
+runGenie3(exprMat_filtered_log, scenicOptions)
+
+
+
+```
+
+

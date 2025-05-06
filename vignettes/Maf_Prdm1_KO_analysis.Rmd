@@ -1,0 +1,59 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+### 1. load data
+
+
+```{r}
+library(Seurat)
+data_dir <- "D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Maf_Prdm1_KO/GSE158967_RAW"
+WT1_matrix <- Read10X_h5(file.path(data_dir,"GSM4816714_control_385_filtered_gene_bc_matrices_h5.h5"))
+WT2_matrix <- Read10X_h5(file.path(data_dir,"GSM4816715_control_386_filtered_gene_bc_matrices_h5.h5"))
+WT_matrix <- cbind(WT1_matrix, WT2_matrix[row.names(WT1_matrix),])
+colnames(WT_matrix) <- paste("WT_", colnames(WT_matrix),sep="")
+WT <- CreateSeuratObject(counts = WT_matrix)
+
+Prdm1_cko1_matrix <- Read10X_h5(file.path(data_dir,"GSM4816716_Prdm1_cko_381_filtered_gene_bc_matrices_h5.h5"))
+Prdm1_cko2_matrix <- Read10X_h5(file.path(data_dir,"GSM4816717_Prdm1_cko_382_filtered_gene_bc_matrices_h5.h5"))
+Prdm1_matrix <- cbind(Prdm1_cko1_matrix, Prdm1_cko2_matrix[row.names(Prdm1_cko1_matrix),])
+colnames(Prdm1_matrix) <- paste("Prdm1_", colnames(Prdm1_matrix),sep="")
+Prdm1 <- CreateSeuratObject(counts = Prdm1_matrix)
+
+Maf_cko1_matrix <- Read10X_h5(file.path(data_dir,"GSM4816718_Mat_cko_383_filtered_gene_bc_matrices_h5.h5"))
+Maf_cko2_matrix <- Read10X_h5(file.path(data_dir,"GSM4816719_Mat_cko_384_filtered_gene_bc_matrices_h5.h5"))
+Maf_matrix <- cbind(Maf_cko1_matrix, Maf_cko2_matrix[row.names(Maf_cko1_matrix),])
+colnames(Maf_matrix) <- paste("Maf_", colnames(Maf_matrix),sep="")
+Maf <- CreateSeuratObject(counts = Maf_matrix)
+
+Maf_Prdm1_KO <- merge(x = WT, y=list(Maf, Prdm1), project = "Maf_Prdm1_KO")
+Maf_Prdm1_KO[["percent.mt"]] <- PercentageFeatureSet(Maf_Prdm1_KO, pattern = "^mt-")
+head(Maf_Prdm1_KO@meta.data, 5)
+VlnPlot(Maf_Prdm1_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+Maf_Prdm1_KO <- subset(Maf_Prdm1_KO, subset = nFeature_RNA > 500 & nFeature_RNA < 4000 & percent.mt < 10)
+VlnPlot(Maf_Prdm1_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+Maf_Prdm1_KO <- NormalizeData(Maf_Prdm1_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+Maf_Prdm1_KO <- FindVariableFeatures(Maf_Prdm1_KO, selection.method = "vst", nfeatures = 2000)
+Maf_Prdm1_KO <- ScaleData(Maf_Prdm1_KO, use.umi=T)
+Maf_Prdm1_KO <- RunPCA(Maf_Prdm1_KO, features = VariableFeatures(object = Maf_Prdm1_KO))
+DimPlot(Maf_Prdm1_KO, reduction = "pca")
+Maf_Prdm1_KO <- FindNeighbors(Maf_Prdm1_KO, dims = 1:50)
+Maf_Prdm1_KO <- FindClusters(Maf_Prdm1_KO)
+Maf_Prdm1_KO <- RunTSNE(object = Maf_Prdm1_KO, dims.use = 1:50)
+DimPlot(Maf_Prdm1_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(Maf_Prdm1_KO, reduction = "tsne",features = "Maf")
+FeaturePlot(Maf_Prdm1_KO, reduction = "tsne",features = "Prdm1")
+
+Maf_Prdm1_KO <- RunUMAP(Maf_Prdm1_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(Maf_Prdm1_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Maf_Prdm1_KO, reduction = "umap",features = c("Maf","Prdm1"),split.by = "orig.ident")
+FeaturePlot(Maf_Prdm1_KO, reduction = "umap",features = "Prdm1")
+VlnPlot(Maf_Prdm1_KO, features = c("Maf", "Prdm1"), group.by = "orig.ident",ncol = 3)
+
+
+```

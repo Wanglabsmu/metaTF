@@ -1,0 +1,49 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+### 1. runing time test
+
+#### 1.1 10X genimics
+
+```{r}
+exp_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/exp_data/Nkx2_1_KO_epi_counts.txt",sep="\t",header=T,row.names=1,check.names=F)
+exp_mat_filter <- as.matrix(exp_mat[apply(exp_mat,1,function(x){length(x[which(x>0)])>=10}),])
+
+num_test <- c(200, 400, 600, 800, 1000, 1500, 2000)
+test_time <- pbapply::pblapply(num_test,function(x,mat){
+  gname <- sample(x = row.names(mat),size = x,replace = FALSE)
+  mat <- mat[gname,]
+  time <- c()
+  for(i in c("pcor", "pidc", "sclink")){
+    st <- proc.time()
+    grns <- inferGRNs(x = mat, method= i,ncores=6)
+    diff_st <- proc.time()-st
+    names(diff_st) <- i
+    time[[i]] <- diff_st
+  }
+  rm(list="grns")
+  return(time)
+},mat=exp_mat_filter)
+names(test_time) <- num_test
+saveRDS(test_time,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/PIDC_pcor_SClink_running_time.rds")
+test_time_filter <- lapply(test_time,function(x){
+  sapply(x,function(y){y[3]})
+})
+
+test_time_tab <- do.call(rbind,test_time_filter)
+test_time_melt <- reshape2::melt(test_time_tab) %>% filter(Var2 %in% c("pcor.NA","pidc.NA"))
+test_time_melt <- reshape2::melt(test_time_tab) %>% filter(Var2 %in% c("pcor.NA","pidc.NA"))
+
+
+library(ggplot2)
+library(ggbreak)
+p <- ggplot(test_time_melt,aes(x=Var1,y=value,fill=Var2))+
+  geom_bar(stat='identity',position="dodge")
+p
+
+```
+
+
+
+

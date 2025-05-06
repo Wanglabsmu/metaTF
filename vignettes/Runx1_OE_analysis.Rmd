@@ -1,0 +1,79 @@
+---
+title: "Runx1_OE"
+author: "Puwen Tan"
+date: "2021/6/22"
+output: html_document
+---
+
+
+```{r}
+library(Seurat)
+library(data.table)
+WT_matrix <- Matrix::readMM("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/WT/matrix.mtx.gz")
+WT_gene <- fread("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/WT/features.tsv.gz",sep="\t",header=T,data.table=F)
+row.names(WT_gene) <- WT_gene$gene_id
+WT_cell <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/WT/barcodes.tsv.gz",sep="\t",header=T,row.names=1)
+WT_matrix <- t(as.matrix(WT_matrix))
+colnames(WT_matrix) <- row.names(WT_cell)
+row.names(WT_matrix) <- WT_gene$gene_ids
+dupli_gene <- WT_gene[duplicated(WT_gene$V1),]$V1
+WT_gene_filter <- WT_gene[WT_gene$V1 %in% dupli_gene,]$gene_ids
+WT_matrix <- WT_matrix[setdiff(row.names(WT_matrix),WT_gene_filter),]
+row.names(WT_matrix) <- WT_gene[row.names(WT_matrix),"V1"]
+colnames(WT_matrix) <- paste("WT_",colnames(WT_matrix),sep="")
+WT <- CreateSeuratObject(counts = WT_matrix, project = "WT")
+
+
+
+OE_matrix <- Matrix::readMM("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/OE/matrix.mtx.gz")
+OE_gene <- fread("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/OE/features.tsv.gz",sep="\t",header=T,data.table=F)
+row.names(OE_gene) <- OE_gene$gene_id
+OE_cell <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/RUNX1_OE/OE/barcodes.tsv.gz",sep="\t",header=T,row.names=1)
+OE_matrix <- t(as.matrix(OE_matrix))
+colnames(OE_matrix) <- row.names(OE_cell)
+row.names(OE_matrix) <- OE_gene$gene_ids
+dupli_gene <- OE_gene[duplicated(OE_gene$V1),]$V1
+OE_gene_filter <- OE_gene[OE_gene$V1 %in% dupli_gene,]$gene_ids
+OE_matrix <- OE_matrix[setdiff(row.names(OE_matrix),OE_gene_filter),]
+row.names(OE_matrix) <- OE_gene[row.names(OE_matrix),"V1"]
+colnames(OE_matrix) <- paste("OE_",colnames(OE_matrix),sep="")
+OE <- CreateSeuratObject(counts = OE_matrix, project = "OE")
+
+Runx1_OE <- merge(x = WT, y=OE, project = "Runx1_OE")
+
+Runx1_OE[["percent.mt"]] <- PercentageFeatureSet(Runx1_OE, pattern = "^MT-")
+head(Runx1_OE@meta.data, 5)
+
+plot1 <- FeatureScatter(Runx1_OE, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(Runx1_OE, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(Runx1_OE, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+Runx1_OE <- subset(Runx1_OE, subset = nFeature_RNA > 2000 & nFeature_RNA < 5000 & percent.mt < 20)
+VlnPlot(Runx1_OE, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+Runx1_OE <- NormalizeData(Runx1_OE, normalization.method = "LogNormalize", scale.factor = 10000)
+Runx1_OE <- FindVariableFeatures(Runx1_OE, selection.method = "vst", nfeatures = 2000)
+Runx1_OE <- ScaleData(Runx1_OE, use.umi=T)
+Runx1_OE <- RunPCA(Runx1_OE, features = VariableFeatures(object = Runx1_OE))
+DimPlot(Runx1_OE, reduction = "pca")
+Runx1_OE <- FindNeighbors(Runx1_OE, dims = 1:50)
+Runx1_OE <- FindClusters(Runx1_OE)
+Runx1_OE <- RunTSNE(object = Runx1_OE, dims.use = 1:50)
+DimPlot(Runx1_OE, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(Runx1_OE, reduction = "tsne",features = "RUNX1",split.by = "orig.ident")
+FeaturePlot(Runx1_OE, reduction = "tsne",features = "Nkx2-1")
+
+Runx1_OE <- RunUMAP(Runx1_OE, umap.method ="uwot", dims = 1:50)
+DimPlot(Runx1_OE, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Runx1_OE, reduction = "umap",features = "RUNX1",split.by = "orig.ident")
+
+Runx1_OE_counts <- as.matrix(Seurat::GetAssayData(Runx1_OE, assay = "RNA", slot = "counts"))
+saveRDS(Runx1_OE_counts,"../ext_data/Runx1_OE/raw_data/Runx1_OE_cell_counts.rds")
+saveRDS(Runx1_OE@meta.data,"../ext_data/Runx1_OE/raw_data/Runx1_OE_cell_metadata.rds")
+VlnPlot(Runx1_OE, features = c("RUNX1"), group.by = "orig.ident",ncol = 3)
+
+
+```
+

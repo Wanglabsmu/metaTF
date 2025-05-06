@@ -1,0 +1,51 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+### 1.load data
+```{r}
+library(Seurat)
+WT_matrix <- Seurat::Read10X("../ext_data/Irf5_KO/raw_data")
+Irf5_KO <- CreateSeuratObject(counts = WT_matrix, project = "WT")
+
+Irf5_KO[["percent.mt"]] <- PercentageFeatureSet(Irf5_KO, pattern = "^mt-")
+Irf5_KO@meta.data$orig.ident <- sapply(strsplit(row.names(Irf5_KO@meta.data),split = "_"),function(x){x[2]})
+head(Irf5_KO@meta.data, 5)
+
+plot1 <- FeatureScatter(Irf5_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(Irf5_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(Irf5_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+Irf5_KO <- subset(Irf5_KO, subset = nFeature_RNA > 1000 & nFeature_RNA < 3000 & nCount_RNA<20000 & percent.mt < 5)
+VlnPlot(Irf5_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+Irf5_KO <- NormalizeData(Irf5_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+Irf5_KO <- FindVariableFeatures(Irf5_KO, selection.method = "vst", nfeatures = 2000)
+Irf5_KO <- ScaleData(Irf5_KO, use.umi=T)
+Irf5_KO <- RunPCA(Irf5_KO, features = VariableFeatures(object = Irf5_KO))
+DimPlot(Irf5_KO, reduction = "pca")
+Irf5_KO <- FindNeighbors(Irf5_KO, dims = 1:50)
+Irf5_KO <- FindClusters(Irf5_KO)
+Irf5_KO <- RunTSNE(object = Irf5_KO, dims.use = 1:50)
+DimPlot(Irf5_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(Irf5_KO, reduction = "tsne",features = "Irf5",split.by = "orig.ident")
+FeaturePlot(Irf5_KO, reduction = "tsne",features = "Irf5")
+
+Irf5_KO <- RunUMAP(Irf5_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(Irf5_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Irf5_KO, reduction = "umap",features = "Irf5",split.by = "orig.ident")
+
+Irf5_KO_counts <- as.matrix(Seurat::GetAssayData(Irf5_KO, assay = "RNA", slot = "counts"))
+saveRDS(Irf5_KO_counts,"../ext_data/Irf5_KO/raw_data/Irf5_KO_cell_counts.rds")
+saveRDS(Irf5_KO@meta.data,"../ext_data/Irf5_KO/raw_data/Irf5_KO_cell_metadata.rds")
+
+VlnPlot(Irf5_KO,features = "Irf5",group.by = "orig.ident")
+
+
+```
+

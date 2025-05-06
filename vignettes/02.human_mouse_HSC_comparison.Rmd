@@ -1,0 +1,681 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1.1 merge human mouse data
+
+```{r}
+HD4_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+SPF_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/mouse_SPF_matrix_filter.rds")
+human2mouse_gene <- getHomologGene()
+human2mouse_gene_exp1 <- left_join(human2mouse_gene,y = HD4_exp_data, by=c('Gene_Symbol_human'='gene_symbol'))
+human2mouse_gene_exp2 <- left_join(x=human2mouse_gene_exp1,y = SPF_exp_data, by=c('Gene_Symbol_mouse'='gene_symbol'))
+human2mouse_gene_exp2[is.na(human2mouse_gene_exp2)] <- 0
+human2mouse_gene_exp2 <- human2mouse_gene_exp2[rowSums(human2mouse_gene_exp2[,-c(1:2)])>0,]
+saveRDS(human2mouse_gene_exp2, "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_filter.rds")
+row_metadata <- as.data.frame(human2mouse_gene_exp2[,1:2])
+row.names(row_metadata) <- paste(human2mouse_gene_exp2$Gene_Symbol_human,human2mouse_gene_exp2$Gene_Symbol_mouse,sep="_")
+saveRDS(row_metadata, "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_row_metadata.rds")
+
+```
+
+
+#### 1.2 Runing Seurat with merged object
+
+```{r}
+HD4_SPF <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_filter.rds")
+HD4_SPF_row_metadata <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_row_metadata.rds")
+HD4_SPF_mat <- as.matrix(HD4_SPF[,-c(1:2)])
+row.names(HD4_SPF_mat) <- row.names(HD4_SPF_row_metadata)
+
+library(Seurat)
+HD4_SPF_seu <- CreateSeuratObject(counts = HD4_SPF_mat, project = "HD4_SPF_HSC")
+VlnPlot(HD4_SPF_seu, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+HD4_SPF_seu <- NormalizeData(HD4_SPF_seu, normalization.method = "LogNormalize", scale.factor = 10000)
+HD4_SPF_seu <- FindVariableFeatures(HD4_SPF_seu, selection.method = "vst", nfeatures = 2000)
+HD4_SPF_seu <- ScaleData(HD4_SPF_seu, use.umi=T)
+HD4_SPF_seu <- RunPCA(HD4_SPF_seu, features = VariableFeatures(object = HD4_SPF_seu))
+DimPlot(HD4_SPF_seu, reduction = "pca",group.by = "orig.ident")
+HD4_SPF_seu <- FindNeighbors(HD4_SPF_seu, dims = 1:50)
+HD4_SPF_seu <- FindClusters(HD4_SPF_seu, resolution = 0.1)
+head(Idents(HD4_SPF_seu), 5)
+HD4_SPF_seu <- RunUMAP(HD4_SPF_seu, umap.method ="uwot", dims = 1:50)
+DimPlot(HD4_SPF_seu, reduction = "umap", label = TRUE, label.size=4,group.by = "orig.ident")
+
+```
+
+#### 1.2 Runing Seurat with merged object
+
+```{r}
+HD4_SPF_list <- SplitObject(HD4_SPF_seu,split.by = "orig.ident")
+HD4_SPF_list <- lapply(X = HD4_SPF_list, FUN = SCTransform)
+HD4_SPF_list <- lapply(X = HD4_SPF_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 5000)
+})
+features <- SelectIntegrationFeatures(object.list = HD4_SPF_list, nfeatures = 5000)
+HD4_SPF_list <- PrepSCTIntegration(object.list = HD4_SPF_list, anchor.features = features)
+
+hsc.anchors <- FindIntegrationAnchors(object.list = HD4_SPF_list, normalization.method = "SCT",
+    anchor.features = features)
+hsc.combined.sct <- IntegrateData(anchorset = hsc.anchors, normalization.method = "SCT")
+
+hsc.combined.sct <- RunPCA(hsc.combined.sct, verbose = FALSE)
+hsc.combined.sct <- RunUMAP(hsc.combined.sct, reduction = "pca", dims = 1:50)
+hsc.combined.sct <- FindNeighbors(hsc.combined.sct, reduction = "pca", dims = 1:50)
+hsc.combined.sct <- FindClusters(hsc.combined.sct, resolution = 0.2)
+hsc.combined.markers <- FindAllMarkers(hsc.combined.sct)
+saveRDS(hsc.combined.markers,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/hsc.combined.markers.rds")
+
+hsc.cluster7.markers <- FindMarkers(hsc.combined.sct,ident.1 = 7)
+hsc.cluster8.markers <- FindMarkers(hsc.combined.sct,ident.1 = 8)
+
+
+
+p1 <- DimPlot(HD4_SPF_seu, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(hsc.combined.sct, reduction = "umap", group.by = "orig.ident")
+p3 <- DimPlot(hsc.combined.sct, reduction = "umap", label = TRUE,group.by="labels")
+p1 + p2 +p3
+
+FeaturePlot(hsc.combined.sct, features = c("HLF-Hlf","ITGA2B-Itga2b","GATA1-Gata1","DNTT-Dntt","MPO-Mpo","TGFBI-Tgfbi"),ncol = 6)
+
+VlnPlot(hsc.combined.sct, features = c("HLF-Hlf","ITGA2B-Itga2b","MPO-Mpo","HBB-Hbb-bs","DNTT-Dntt","TGFBI-Tgfbi","GATA1-Gata1"),split.by = "orig.ident")
+
+
+#HSC
+VlnPlot(hsc.combined.sct,features = c("HLF-Hlf"))
+#MEP Er
+VlnPlot(hsc.combined.sct,features = c("KLF1-Klf1","GATA2-Gata2","GATA1-Gata1","HBB-Hbb-bs","HBB-Hbb-bt","LMNA-Lmna"))
+#GMP
+VlnPlot(hsc.combined.sct,features = c("MPO-Mpo","TGFBI-Tgfbi","LGMN-Lgmn"))
+#CLP
+VlnPlot(hsc.combined.sct,features = c("DNTT-Dntt","CD79A-Cd79a","RAG1-Rag1","RAG2-Rag2"),slot = "data")
+#monocyte-4,6
+VlnPlot(hsc.combined.sct,features = c("CD14-Cd14","CEBPB-Cebpb","LYZ-Lyz1","LYZ-Lyz2"),slot = "data")
+#DC-9
+VlnPlot(hsc.combined.sct,features = c("IRF8-Irf8","SPIB-Spib"),slot = "data")
+#
+VlnPlot(hsc.combined.sct,features = c("CPA3-Cpa3","HDC-Hdc"),slot = "data")
+
+VlnPlot(hsc.combined.sct,features = c("CSF1-Csf1","TGFBI-Tgfbi"),slot = "data")
+
+new_cluster_ids <- c("MEP","HSC/MPP","GMP","Erythroid progenitor", "Monocyte","CLP","Monocyte","GMP","NK","DC")
+names(new_cluster_ids) <- levels(hsc.combined.sct)
+hsc.combined.sct@meta.data$labels <- factor(hsc.combined.sct@meta.data$labels,levels = c("HSC/MPP","GMP","MEP","Erythroid progenitor", "Monocyte","preB","NK","DC"))
+
+saveRDS(hsc.combined.sct,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/hsc.combined.sct.rds")
+hsc.combined.sct@meta.data$labels <- new_cluster_ids[hsc.combined.sct@meta.data$integrated_snn_res.0.2]
+write.table(hsc.combined.sct@meta.data[,c(1,2,3,6,7,9,11)],"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/col_metadata.txt",sep="\t",quote=F)
+
+row_metadata %>% filter(Gene_Symbol_human %in% c("JCHAIN"))
+row_metadata %>% filter(Gene_Symbol_mouse %in% c("Hoxb5"))
+
+
+```
+
+#### 1.3 SingleR
+
+```{r}
+######SingleR
+hsc.combined.sce <- importFromSeurat(hsc.combined.sct)
+rowData(hsc.combined.sce) <- HD4_SPF_row_metadata
+rowData(hsc.combined.sce)$feature_symbol <- rownames(hsc.combined.sce)
+rownames(hsc.combined.sce) <- rowData(hsc.combined.sce)[,1]
+sce <- hsc.combined.sce[,row.names(hsc.combined.sct@meta.data[hsc.combined.sct@meta.data$orig.ident=="human",])]
+
+
+celldex_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/cell_markers/human_mouse_celldex.rds")
+#mouse_HSC <- celldex_data$Novershtern
+be_res <- celldex_data$Blueprint
+library(SingleR)
+sce_pred <- SingleR(test = sce, ref = be_res, assay.type.test=1, labels = be_res$label.fine)
+table(sce_pred$labels)
+colData(sce)$labels <- sce_pred[row.names(colData(sce)),"labels"]
+scater::plotReducedDim(object = sce,dimred = "UMAP",colour_by = "labels")
+
+
+p1 <- DimPlot(hsc.combined.sct, reduction = "umap", label = TRUE, repel = TRUE)
+p2 <- DimPlot(hsc.combined.sct, reduction = "umap", group.by = "labels",label = T)
+
+p1 + p2
+
+```
+
+#### 1.4 clustering
+
+```{r}
+library(Seurat)
+library(dplyr)
+hsc.combined.sct <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/hsc.combined.sct.rds")
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/col_metadata.txt",sep="\t",header=T,row.names=1)
+col_metadata <- col_metadata %>% filter(!(labels %in% c("NK", "DC")))
+col_metadata$stage <- paste(col_metadata$orig.ident,col_metadata$labels,sep="_")
+
+SPF_HD4_merge_scaled <- hsc.combined.sct@assays$integrated@scale.data[,row.names(col_metadata)]
+SPF_HD4_merge_scaled_mean <- t(apply(SPF_HD4_merge_scaled,1,function(x){tapply(x,as.character(col_metadata[names(x),"stage"]),mean)}))
+
+d <- dist(t(SPF_HD4_merge_scaled_mean))
+plot(hclust(d,method = "ward.D2"))
+```
+
+
+2.1 Running cell type specific regulon with SPF active mat 
+
+```{r}
+SPF_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/mouse_SPF_matrix_filter.rds")
+SPF_exp <- as.matrix(SPF_exp_data[,-1])
+row.names(SPF_exp) <- SPF_exp_data$gene_symbol
+mouse_tfs <- intersect(row.names(SPF_atfr),TF_Symbols$mouse)
+
+SPF_pidc <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/GRNs/SPF_mat_PIDC.rds")
+SPF_pidc_regulon <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/GRNs/SPF_PIDC_regulon.rds") %>% filter(regulator %in% mouse_tfs)
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/col_metadata.txt",sep="\t",header=T,row.names=1)
+col_metadata <- col_metadata %>% filter(!(labels %in% c("NK", "DC")))
+col_metadata <- col_metadata[intersect(row.names(col_metadata), colnames(SPF_exp)),]
+SPF_atfr <- scATFR(exp_data = SPF_exp[,row.names(col_metadata)], col_data = col_metadata)
+GRN(SPF_atfr,"pidc") <- SPF_pidc
+
+mouse_blood <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_strict_network.txt.gz",sep="\t",header=T) %>% filter(tf %in% mouse_tfs)
+
+regulons <- integraNets(grnNets = list(SPF_pidc_regulon, mouse_blood), norm_weight = T,
+                        max_target_num=2000, min_target_num = 100, join_type = "full", 
+                        return_sig = T, maxInter = 5, ncores = 4)
+SPF_regulon_list <- dfToList(regulons)
+SPF_atfr <- filterRegulons(x = SPF_atfr, gene_list = SPF_regulon_list, maxSize=500, minSize=5)
+hist(sapply(Regulon(SPF_atfr),length))
+SPF_atfr <- regulonActivity(x = SPF_atfr, method="viper")
+SPF_active_mat <- assay(altExp(SPF_atfr,"viper"))
+write.table(SPF_active_mat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/SPF_active_mat.txt",sep="\t",quote=F)
+saveRDS(SPF_atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/objects/SPF_atfr.rds")
+
+#---cell type specific
+SPF_cst_regulons <- findAllCTSRegulons(x = SPF_atfr,clust_name="labels", nperm = 10000, ncores = 6, fdr = 1, css = 0, expression_per=0)
+saveRDS(SPF_cst_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_regulons_all_res.rds")
+SPF_tf_expression <- as.matrix(assay(SPF_atfr,"counts")[mouse_tfs,])
+SPF_cst_TF <- findAllCTSRegulons(x = SPF_tf_expression, col_data=colData(SPF_atfr), clust_name="labels", scale=TRUE, nperm = 10000, ncores = 6, fdr = 1, css = 0)
+saveRDS(SPF_cst_TF,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_TFs_all_res.rds")
+
+SPF_overlap_TFs <- intersect(SPF_cst_regulons$regulon,SPF_cst_TF$regulon)
+
+
+```
+
+2.2 Running with HD4 activate mat 
+
+```{r}
+HD4_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+HD4_exp <- as.matrix(HD4_exp_data[,-1])
+row.names(HD4_exp) <- HD4_exp_data$gene_symbol
+HD4_pidc <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/GRNs/HD4_PIDC_res.rds")
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/col_metadata.txt",sep="\t",header=T,row.names=1)
+col_metadata <- col_metadata %>% filter(!(labels %in% c("NK", "DC")))
+col_metadata <- col_metadata[intersect(row.names(col_metadata), colnames(HD4_exp)),]
+HD4_atfr <- scATFR(exp_data = HD4_exp[,row.names(col_metadata)], col_data = col_metadata)
+GRN(HD4_atfr,"pidc") <- HD4_pidc
+
+human_tf <- intersect(TF_Symbols$human,row.names(HD4_atfr))
+HD4_pidc_regulon <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/GRNs/HD4_PIDC_regulons.rds") %>% filter(regulator %in% human_tf)
+human_blood <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/blood_merged_filter_strict_network.txt.gz",sep="\t",header=T) %>% filter(tf %in% human_tf)
+regulons <- integraNets(grnNets = list(HD4_pidc_regulon,human_blood), norm_weight = T,
+                        max_target_num=2000, min_target_num = 100, join_type = "full", 
+                        return_sig = T, maxInter = 5, ncores = 4)
+HD4_regulon_list <- dfToList(regulons)
+HD4_atfr <- filterRegulons(x = HD4_atfr, gene_list=HD4_regulon_list, maxSize=500, minSize=5)
+hist(sapply(Regulon(HD4_atfr),length))
+HD4_atfr <- regulonActivity(x = HD4_atfr, method="viper")
+HD4_active_mat <- assay(altExp(HD4_atfr,"viper"))
+write.table(HD4_active_mat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/active_mat/HD4_active_mat.txt",sep="\t",quote=F)
+saveRDS(HD4_atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/objects/HD4_atfr.rds")
+#---cell type specific
+HD4_cst_regulons <- findAllCTSRegulons(x = HD4_atfr, clust_name="labels", nperm = 10000, ncores = 6, fdr = 1, css = 0, expression_per=0)
+saveRDS(HD4_cst_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_regulons_all_res.rds")
+#Er
+HD4_cst_regulons[HD4_cst_regulons$regulon %in% c("KLF1", "MYC","GATA1","MYBL2","NFIA","GATA2", "PBX1", "MEIS1","HES6", "E2F4"),]
+
+HD4_cst_regulons[HD4_cst_regulons$regulon %in% c("EBF1", "ID3", "ATF3","EBF1", "SATB1", "SP140"),]
+
+
+
+#---expression level
+HD4_tf_expression <- as.matrix(assay(HD4_atfr,"counts")[human_tf,])
+HD4_cst_TF <- findAllCTSRegulons(x = HD4_tf_expression, col_data=colData(HD4_atfr), clust_name="labels", scale=TRUE, nperm = 10000, ncores = 6, fdr = 1, css = 0)
+saveRDS(HD4_cst_TF,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_TFs_all_res.rds")
+#Er
+HD4_cst_TF[HD4_cst_TF$regulon %in% c("KLF1", "MYC","GATA1","MYBL2","NFIA","GATA2", "PBX1", "MEIS1","HES6", "E2F4"),]
+HD4_cst_TF[HD4_cst_TF$regulon %in% c("EBF1", "ID3", "ATF3","EBF1", "SATB1", "SP140"),]
+
+HD4_overlap_TFs <- intersect(HD4_cst_TF$regulon,HD4_cst_regulons$regulon)
+length(HD4_overlap_TFs)
+length(table(HD4_cst_TF$regulon))
+length(table(HD4_cst_regulons$regulon))
+```
+
+#### 2.3 human-mouse cell-type specific TF regulons
+
+```{r}
+row_metadata <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_row_metadata.rds")
+HD4_mean_active <- summarizeClusterValueRegulon(object = HD4_atfr,clust_name = "labels",scale=FALSE)
+SPF_mean_active <- summarizeClusterValueRegulon(object = SPF_atfr,clust_name = "labels",scale=FALSE)
+HD4_SPF_mean_active <- rbind(HD4_mean_active,SPF_mean_active)
+
+#------regulon level
+HD4_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_regulons_all_res.rds")
+SPF_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_regulons_all_res.rds")
+
+HD4_cst_regulons_diff <- HD4_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+SPF_cst_regulons_diff <- SPF_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+
+HD4_SPF_diff_active <- HD4_SPF_mean_active[union(HD4_cst_regulons_diff$regulon,SPF_cst_regulons_diff$regulon),]
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+mouse_gene <- rep("mouse",length(unique(SPF_cst_regulons_diff$regulon)))
+names(mouse_gene) <- unique(SPF_cst_regulons_diff$regulon)
+human_gene <- rep("human",length(unique(HD4_cst_regulons_diff$regulon)))
+names(human_gene) <- unique(HD4_cst_regulons_diff$regulon)
+anno_row <- data.frame(type = c(mouse_gene,human_gene))
+anno_row$type <- factor(anno_row$type,levels=c("mouse","human"))
+cluster_num=6
+p <- pheatmap::pheatmap(HD4_SPF_diff_active,scale = "row",method="ward.D2",fontsize = 2,cluster_rows = T,cutree_rows = cluster_num,
+                        color = pal,annotation_row = anno_row)
+saveRDS(p,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/figure/regulon_heatmap.rds")
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("cluster",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+cluster_row = data.frame(cluster = cluster_name_ordered)
+cluster_row$cluster = new_cluster_name[as.character(cluster_row$cluster)]
+cluster_row$cluster = factor(cluster_row$cluster,
+                          levels = paste("cluster",1:cluster_num,sep=""))
+out_frm <- data.frame(gene_name =row.names(cluster_row),
+                      cluster = cluster_row[,'cluster'],
+                      species = anno_row[row.names(cluster_row),"type"],
+                      HD4_SPF_diff_active[row.names(cluster_row),])
+write.table(out_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/figure/CST_regulon_HD4_SPF_heatmap.txt",sep="\t",row.names = F,quote=F)
+
+#---GMP and Monocyte
+GPM_Monocyte_diff <- sort(HD4_SPF_diff_active[,"GMP"]-HD4_SPF_diff_active[,"Monocyte"])
+GPM_Monocyte_diff_tab <- data.frame(gene_name = names(GPM_Monocyte_diff),
+                                    species = out_frm[names(GPM_Monocyte_diff),"species"],
+                                    diff = GPM_Monocyte_diff)
+HSC_CLP_diff <- sort(HD4_SPF_diff_active[,"HSC/MPP"]-HD4_SPF_diff_active[,"CLP"])
+MEP_vs_CLP_MPP_diff <- sort(HD4_SPF_diff_active[,"MEP"]-(HD4_SPF_diff_active[,"CLP"]+HD4_SPF_diff_active[,"HSC/MPP"])/2)
+
+GMP_vs_CLP_HSC_MEP <- sort((HD4_SPF_diff_active[,"GMP"]+HD4_SPF_diff_active[,"Monocyte"])/2-
+                           (HD4_SPF_diff_active[,"CLP"]+HD4_SPF_diff_active[,"HSC/MPP"]+HD4_SPF_diff_active[,"MEP"])/3)
+
+Ery_vs_GMP_CLP_HSC_MEP <- sort(apply(HD4_SPF_diff_active,1,function(x){
+  x[2]-mean(x[-2])
+}))
+
+```
+#### 2.4 shared targets similarity
+
+```{r}
+library(dplyr)
+HD4_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_regulons_all_res.rds")
+SPF_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_regulons_all_res.rds")
+
+HD4_cst_regulons_diff <- HD4_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+SPF_cst_regulons_diff <- SPF_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+
+#---human
+HD4_cst_regulons_list <- HD4_cst_regulons_diff$targets
+SPF_cst_regulons_list <- SPF_cst_regulons_diff$targets
+SPF_cst_regulons_list_homo <- mapHomologList(input_gene = SPF_cst_regulons_list,input_tax = "mouse",output_tax = "human")
+HD4_SPF_cst_regulons_similarity <- calcuModuleSimilar(tfr_list = HD4_cst_regulons_list, 
+                                               pathway_list = SPF_cst_regulons_list_homo,
+                                               min_overlap = 1,
+                                               ncores = 6)
+HD4_SPF_cst_regulons_similarity$overlap_targets_num <- sapply(HD4_SPF_cst_regulons_similarity$overlap_targets,length)
+HD4_SPF_cst_regulons_similarity <- unique(HD4_SPF_cst_regulons_similarity)
+write.table(HD4_SPF_cst_regulons_similarity[,c(1:3)],"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/network/HD4_SPF_cst_regulons_similarity.txt",sep="\t",row.names = F,quote=F)
+HD4_SPF_cst_regulons_similarity_mat <- matrix(0,nrow=length(unique(HD4_SPF_cst_regulons_similarity$regulon)),
+                                              ncol=length(unique(HD4_SPF_cst_regulons_similarity$pathway)))
+dimnames(HD4_SPF_cst_regulons_similarity_mat) <- list(unique(HD4_SPF_cst_regulons_similarity$regulon),
+                                                      unique(HD4_SPF_cst_regulons_similarity$pathway))
+for(i in row.names(HD4_SPF_cst_regulons_similarity_mat)){
+  for(j in colnames(HD4_SPF_cst_regulons_similarity_mat)){
+    value <- HD4_SPF_cst_regulons_similarity %>% filter(regulon==i & pathway==j) %>% 
+      pull(similarity)
+    if(length(value)==1){
+      HD4_SPF_cst_regulons_similarity_mat[i,j] <- value
+    }
+  }
+}
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#ffcdd2","#c62828")
+pal <- colorRampPalette(cols)(99)
+pal <- c("#FFFFFF",pal)
+
+heatmap_cluster <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/figure/CST_regulon_HD4_SPF_heatmap.txt",sep="\t",header=T)
+row.names(heatmap_cluster) <- heatmap_cluster$gene_name
+  
+anno_row <- heatmap_cluster[row.names(HD4_SPF_cst_regulons_similarity_mat),"cluster",drop=F]
+anno_col <- heatmap_cluster[colnames(HD4_SPF_cst_regulons_similarity_mat),"cluster",drop=F]
+
+row_num <- apply(HD4_SPF_cst_regulons_similarity_mat,1,function(x){length(x[which(x>0)])})
+col_num <- apply(HD4_SPF_cst_regulons_similarity_mat,2,function(x){length(x[which(x>0)])})
+HD4_SPF_cst_regulons_similarity_mat_filter <- HD4_SPF_cst_regulons_similarity_mat[names(row_num[row_num>=5]), names(col_num[col_num>=5])]
+
+p <- pheatmap(HD4_SPF_cst_regulons_similarity_mat_filter,scale = "none",clustering_method = "ward.D2",fontsize = 5,color = pal, annotation_row = anno_row, annotation_col = anno_col,border_color = NA)
+saveRDS(p,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/figure/HD4_SPF_cst_regulons_similarity.rds")
+
+```
+
+#### 2.5 functional similarity
+
+```{r}
+library(dplyr)
+HD4_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_regulons_all_res.rds")
+SPF_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_regulons_all_res.rds")
+
+HD4_cst_regulons_diff <- HD4_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+SPF_cst_regulons_diff <- SPF_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+
+#---human
+HD4_cst_regulons_list <- HD4_cst_regulons_diff$targets
+reactome <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/inst/extdata/Reactome_pathway.rds")
+human_reactome <- reactome$`Homo sapiens`
+HD4_cst_regulons_pathway <- calcuModuleSimilar(tfr_list = HD4_cst_regulons_list, 
+                                               pathway_list = human_reactome,
+                                               ncores = 6)
+HD4_cst_regulons_pathway <- unique(HD4_cst_regulons_pathway)
+#---mouse
+SPF_cst_regulons_list <- SPF_cst_regulons_diff$targets
+mouse_reactome <- reactome$`Mus musculus`
+SPF_cst_regulons_pathway <- calcuModuleSimilar(tfr_list = SPF_cst_regulons_list, 
+                                               pathway_list = mouse_reactome,
+                                               ncores = 6)
+SPF_cst_regulons_pathway <- unique(SPF_cst_regulons_pathway)
+
+#----E2f1 E2f4 Cebpz Gabpa E2f8 Nfyb Mybl2
+SPF_cst_regulons_pathway_cluster3 <- SPF_cst_regulons_pathway %>% filter(regulon %in% c("E2f1", "E2f4", "Cebpz","Gabpa", "E2f8", "Nfyb","Mybl2"))
+
+HD4_cst_regulons_pathway_cluster3 <- HD4_cst_regulons_pathway %>% filter(regulon %in% c("E2F1", "E2F4", "CEBPZ"))
+
+HD4_SPF_overlap_pathway_cluster3 <- inner_join(SPF_cst_regulons_pathway_cluster3, 
+                                               HD4_cst_regulons_pathway_cluster3,
+                                               by=c("pathway"="pathway"))
+HD4_SPF_overlap_pathway_cluster3_filter <- HD4_SPF_overlap_pathway_cluster3[,c("regulon.x","pathway","regulon.y")]
+HD4_SPF_overlap_pathway_cluster3_filter <- unique(HD4_SPF_overlap_pathway_cluster3_filter)
+overlap_terms <- table(HD4_SPF_overlap_pathway_cluster3_filter$regulon.x,HD4_SPF_overlap_pathway_cluster3_filter$regulon.y)
+library("easyalluvial")
+library("parcats")
+data <- HD4_SPF_overlap_pathway_cluster3_filter
+p = alluvial_wide(data, max_variables = 3, fill_by = "first_variable",
+                  colorful_fill_variable_stratum=F,col_vector_value=NA)
+parcats(p, marginal_histograms = FALSE, data_input = data,height=1500,width = 1500)
+
+
+
+```
+
+#### 2.6 candidates regulon activity
+
+```{r}
+library(Seurat)
+library(dplyr)
+hsc.combined.sct <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/hsc.combined.sct.rds")
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/col_metadata.txt",sep="\t",header=T,row.names=1)
+umap_res <- hsc.combined.sct@reductions$umap@cell.embeddings
+col_metadata <- cbind(col_metadata,umap_res[row.names(col_metadata),])
+umap_plot <- col_metadata[,c("orig.ident","labels","UMAP_1","UMAP_2")]
+
+HD4_active_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/active_mat/HD4_active_mat.txt",sep="\t",header=T)
+HD4_active <- data.frame(gene_name=row.names(HD4_active_mat),HD4_active_mat,check.names = F)
+SPF_active_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/active_mat/SPF_active_mat.txt",sep="\t",header=T)
+SPF_active <- data.frame(gene_name=row.names(SPF_active_mat),SPF_active_mat,check.names = F)
+
+row_metadata <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_row_metadata.rds")
+HD4_active1 <- left_join(row_metadata,HD4_active,by=c("Gene_Symbol_human"="gene_name"))
+HD4_active2 <- left_join(HD4_active1,SPF_active,by=c("Gene_Symbol_mouse"="gene_name"))
+HD4_active2[is.na(HD4_active2)] <-0
+saveRDS(HD4_active2,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/active_mat/HD4_SPF_merged_activate_mat.rds")
+row.names(HD4_active2) <- paste(HD4_active2$Gene_Symbol_human,HD4_active2$Gene_Symbol_mouse,sep="_")
+HD4_SPF_merged_mat <- HD4_active2[,-c(1:2)]
+
+umap_plot <- umap_plot[intersect(colnames(HD4_SPF_merged_mat),row.names(umap_plot)),]
+
+
+Candi_act <- t(HD4_SPF_merged_mat[i,-c(1:2)])
+umap_plot_frm <- data.frame(umap_plot,t(HD4_SPF_merged_mat)[row.names(umap_plot),],check.names = F)
+
+saveRDS(umap_plot_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/candidates/HD4_SPF_candidates_UMAP_plot.rds")
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=NA, color = NA),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, hjust = 0.5, vjust =0.5,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+
+library(dplyr)
+HD4_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_regulons_all_res.rds")
+SPF_cst_regulons <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_regulons_all_res.rds")
+
+HD4_cst_regulons_diff <- HD4_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2)
+HD4_cst_regulons_not_diff <- HD4_cst_regulons %>% filter(padj >0.05)
+SPF_cst_regulons_diff <- SPF_cst_regulons %>% filter(padj <0.01 & exp_percent>=0.2) %>% group_by(labels) %>% top_n(n = 50,wt = CSS)
+SPF_cst_regulons_not_diff <- SPF_cst_regulons %>% filter(padj >0.05)
+
+
+get_sig_gene <- function(pos,neg,tab){
+  stage <- names(table(tab$labels))
+  othres_sig <- tab %>% filter(padj <0.01 & exp_percent >= 0.1) %>% filter(!labels %in% c(pos,neg))
+  all_not_diff <- tab %>% filter(padj >0.01)
+  pos_sig <- tab %>% filter(padj <0.01 & exp_percent >= 0.3 & labels %in% pos)
+  neg_sig <- tab %>% filter(padj <0.01 & exp_percent >= 0.1 & labels %in% neg)
+  pos_sig_neg_not <- setdiff(pos_sig$regulon,neg_sig$regulon)
+  pos_sig_neg_not <- setdiff(pos_sig_neg_not,othres_sig$regulon)
+  neg_sig_pos_not <- setdiff(neg_sig$regulon,pos_sig$regulon)
+  neg_sig_pos_not <- setdiff(neg_sig_pos_not,othres_sig$regulon)
+  out_res <- tab %>% filter(regulon %in% pos_sig_neg_not)
+  out_res[order(out_res$regulon),]
+}
+#--monocyte vs GMP
+HD4_Monocyte_GMP <- get_sig_gene(pos = "Monocyte",neg = "GMP",tab = HD4_cst_regulons)
+HD4_GMP_Monocyte <- get_sig_gene(pos = "GMP",neg = "Monocyte",tab = HD4_cst_regulons)
+SPF_Monocyte_GMP <- get_sig_gene(pos = "Monocyte",neg = "GMP",tab = SPF_cst_regulons)
+SPF_GMP_Monocyte <- get_sig_gene(pos = "GMP",neg = "Monocyte",tab = SPF_cst_regulons)
+
+#--CLP vs HSC/MPP
+HD4_CLP_HSC <- get_sig_gene(pos = "CLP",neg = "HSC/MPP",tab = HD4_cst_regulons)
+HD4_HSC_CLP <- get_sig_gene(pos = "HSC/MPP",neg = "CLP",tab = HD4_cst_regulons)
+SPF_CLP_HSC <- get_sig_gene(pos = "CLP",neg = "HSC/MPP",tab = SPF_cst_regulons)
+SPF_HSC_CLP <- get_sig_gene(pos = "HSC/MPP",neg = "CLP",tab = SPF_cst_regulons)
+
+#--CLP HSC/MPP vs MEP
+HD4_MEP_CLP_HSC <- get_sig_gene(pos = "MEP",neg = c("CLP","HSC/MPP"),tab = HD4_cst_regulons)
+HD4_HSC_CLP_MEP <- get_sig_gene(pos = c("CLP","HSC/MPP"),neg = "MEP",tab = HD4_cst_regulons)
+SPF_MEP_CLP_HSC <- get_sig_gene(pos = "MEP",neg = c("CLP","HSC/MPP"),tab = SPF_cst_regulons)
+SPF_HSC_CLP_MEP <- get_sig_gene(pos = c("CLP","HSC/MPP"),neg = "MEP",tab = SPF_cst_regulons)
+
+#--CLP HSC/MPP MEP vs GMP monocyte
+HD4_MEP_CLP_HSC_GMP_monocyte <- get_sig_gene(pos = c("CLP","HSC/MPP","MEP"),neg = c("Monocyte", "GMP"),tab = HD4_cst_regulons)
+HD4_GMP_monocyte_HSC_CLP_MEP <- get_sig_gene(pos = c("Monocyte", "GMP"), neg = c("CLP","HSC/MPP","MEP"),tab = HD4_cst_regulons)
+SPF_MEP_CLP_HSC_GMP_monocyte <- get_sig_gene(pos = c("CLP","HSC/MPP","MEP"),neg = c("Monocyte", "GMP"),tab = SPF_cst_regulons)
+SPF_GMP_monocyte_HSC_CLP_MEP <- get_sig_gene(pos = c("Monocyte", "GMP"), neg = c("CLP","HSC/MPP","MEP"),tab = SPF_cst_regulons)
+
+#--Erythroid vs CLP HSC/MPP MEP GMP monocyte
+HD4_Ery_MEP_CLP_HSC_GMP_monocyte <- get_sig_gene(pos = c("Erythroid progenitor"),neg = c("CLP","HSC/MPP","MEP","Monocyte","GMP"),tab = HD4_cst_regulons)
+HD4_GMP_monocyte_HSC_CLP_MEP_Ery <- get_sig_gene(pos = c("CLP","HSC/MPP","MEP","Monocyte","GMP"), neg = c("Erythroid progenitor"),tab = HD4_cst_regulons)
+SPF_Ery_MEP_CLP_HSC_GMP_monocyte <- get_sig_gene(pos = c("Erythroid progenitor"),neg = c("CLP","HSC/MPP","MEP","Monocyte","GMP"),tab = SPF_cst_regulons)
+SPF_GMP_monocyte_HSC_CLP_MEP_Ery <- get_sig_gene(pos = c("CLP","HSC/MPP","MEP","Monocyte","GMP"), neg = c("Erythroid progenitor"),tab = SPF_cst_regulons)
+
+i <- "SPI1_Spi1"
+i <- "NR4A2_Nr4a2"
+i <- "RUNX1_Runx1"
+i <- "ZFP91_Zfp91"
+i <- "TET2_Tet2"
+i <- "KLF2_Klf2"
+i <- "ZNF385A_Zfp385a"
+i <- "BAZ2B_Baz2b"
+i <- "DNTTIP1_Dnttip1"
+i <- "RBCK1_Rbck1"
+i <- "LTF_Ltf"
+i <- "PREB_Preb"
+i <- "CGGBP1_Cggbp1"
+i <- "TP53_Trp53"
+i <- "EBF1_Ebf1"
+i <- "TMF1_Tmf1"
+i <- "IRF3_Irf3"
+i <- "CXXC5_Cxxc5"
+i <- "CAMTA1_Camta1"
+i <- "BBX_Bbx"
+i <- "AHCTF1_Ahctf1"
+i <- "NFIX_Nfix"
+i <- "PCGF6_Pcgf6"
+i <- "SNAPC5_Snapc5"
+i <- "THAP7_Thap7"
+i <- "HLF_Hlf"
+i <- "HOXA9_Hoxa9"
+i <- "IKZF2_Ikzf2"
+i <- "IRF2_Irf2"
+
+umap_plot <- umap_plot_frm[,c("orig.ident",'UMAP_1','UMAP_2',i)]
+umap_plot <- umap_plot[umap_plot$orig.ident=="human",]
+umap_plot <- umap_plot[umap_plot$orig.ident=="mouse",]
+
+p <- ggplot(umap_plot,aes_string(x='UMAP_1',y='UMAP_2',color=i))+
+  geom_point(shape=16,size=0.0005)+
+  scale_color_gradient2(low = "white",midpoint = min(umap_plot[,i]))+
+  facet_wrap(.~orig.ident, nrow=2)+
+  mytheme
+p
+
+ggsave(filename =paste(i,".pdf",sep="") ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/candidates/figure/",
+       width = 70, height =65, dpi = 600, limitsize = FALSE, units ="mm")
+
+HD4_active_mat_seu <- CreateSeuratObject(counts = HD4_active_mat)
+HD4_active_mat_seu@meta.data <- hsc.combined.sct@meta.data[colnames(HD4_active_mat),]
+HD4_active_mat_seu@reductions$umap <- hsc.combined.sct@reductions$umap
+
+p <- FeaturePlot(HD4_active_mat_seu, features = c("AHCTF1","TMF1","CXXC5","EBF1","TP53","NR4A2"),ncol = 6,cols=c("white","blue"),pt.size = 0.001)
+
+ggsave(filename ="HD4_candidates.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/candidates/figure/",
+       width = 400, height =60, dpi = 600, limitsize = FALSE, units ="mm")
+
+SPF_active_mat_seu <- CreateSeuratObject(counts = SPF_active_mat)
+SPF_active_mat_seu@meta.data <- hsc.combined.sct@meta.data[colnames(SPF_active_mat),]
+SPF_active_mat_seu@reductions$umap <- hsc.combined.sct@reductions$umap
+
+p <- FeaturePlot(SPF_active_mat_seu, features = c("Ahctf1","Camta1","Irf2","Cxxc5","Cggbp1","Ltf"),ncol = 6,cols=c("white","blue"),pt.size = 0.001)
+
+ggsave(filename ="SPF_candidates.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/candidates/figure/",
+       width = 400, height =60, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+```
+
+
+
+```{r}
+#------expression level
+row_metadata <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/HD4_SPF_merged_row_metadata.rds")
+HD4_cst_TF <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/HD4_cst_TFs_all_res.rds")
+SPF_cst_TF <-readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/diff_res/SPF_cst_TFs_diff_res.rds")
+
+HD4_mean_tf <- summarizeClusterValue(object = HD4_atfr,gene_name = unique(HD4_cst_TF$regulon),clust_name = "labels",scale=TRUE)
+SPF_mean_tf <- summarizeClusterValue(object = SPF_atfr,gene_name = unique(SPF_cst_TF$regulon),clust_name = "labels",scale=TRUE)
+HD4_SPF_mean_tf <- rbind(HD4_mean_tf,SPF_mean_tf)
+
+#------regulon level
+
+HD4_cst_tf_diff <- HD4_cst_TF %>% filter(padj <0.01) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+SPF_cst_tf_diff <- SPF_cst_TF %>% filter(padj <0.01) %>% group_by(labels) %>% top_n(n = 20,wt = CSS)
+HD4_SPF_diff_tf <- HD4_SPF_mean_tf[union(HD4_cst_tf_diff$regulon,SPF_cst_tf_diff$regulon),]
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+mouse_gene <- rep("mouse",length(unique(SPF_cst_tf_diff$regulon)))
+names(mouse_gene) <- unique(SPF_cst_tf_diff$regulon)
+human_gene <- rep("human",length(unique(HD4_cst_tf_diff$regulon)))
+names(human_gene) <- unique(HD4_cst_tf_diff$regulon)
+anno_row <- data.frame(type = c(mouse_gene,human_gene))
+
+p <- pheatmap::pheatmap(HD4_SPF_diff_tf,scale = "row",method="ward.D2",fontsize = 8,cluster_rows = T,cutree_rows = 6,
+                        color = pal,annotation_row = anno_row)
+
+
+saveRDS(p,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/figure/regulon_heatmap.rds")
+
+HD4_cst_tf_diff_list <- split(HD4_cst_tf_diff$regulon,HD4_cst_tf_diff$labels)
+SPF_cst_tf_diff_list <- split(SPF_cst_tf_diff$regulon,SPF_cst_tf_diff$labels)
+SPF_cst_tf_diff_list_homo <- mapHomologList(input_gene = SPF_cst_tf_diff_list,input_tax = "mouse",output_tax = "human")
+HD4_SPF_cst_tf_overlap <- purrr::map2(.x = HD4_cst_tf_diff_list, 
+                                      .y = SPF_cst_tf_diff_list_homo,
+                                      .f = function(x,y){
+                                        intersect(x,y)})
+
+
+
+library("easyalluvial")
+library("parcats")
+data <- HD4_SPF_cst_regulons_tab[,3:4]
+p = alluvial_wide(data, max_variables = 2, fill_by = "first_variable",
+                  colorful_fill_variable_stratum=F,col_vector_value=NA)
+parcats(p, marginal_histograms = FALSE, data_input = data,height=500,width = 500)
+
+
+```
+
+
+#### 2.3 active mat merged analysis
+
+```{r}
+HD4_active_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/HD4_active_mat.txt",sep="\t",header=T)
+HD4_active <- data.frame(gene_symbol=row.names(HD4_active_mat),HD4_active_mat)
+SPF_active_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/viper/SPF_active_mat.txt",sep="\t",header=T)
+SPF_active <- data.frame(gene_symbol=row.names(SPF_active_mat),SPF_active_mat)
+
+human2mouse_gene <- getHomologGene()
+human2mouse_gene_act1 <- left_join(human2mouse_gene,y = HD4_active, by=c('Gene_Symbol_human'='gene_symbol'))
+human2mouse_gene_act2 <- left_join(x=human2mouse_gene_act1,y = SPF_active, by=c('Gene_Symbol_mouse'='gene_symbol'))
+human2mouse_gene_act2[is.na(human2mouse_gene_act2)] <- 0
+human2mouse_gene_act2 <- human2mouse_gene_act2[rowSums(human2mouse_gene_act2[,-c(1:2)])>0,]
+human2mouse_gene_act2 <- as.data.frame(human2mouse_gene_act2)
+row.names(human2mouse_gene_act2) <- paste(human2mouse_gene_act2$Gene_Symbol_human,human2mouse_gene_act2$Gene_Symbol_mouse,sep="_")
+human2mouse_gene_act2_mat <- as.matrix(human2mouse_gene_act2[,-c(1:2)])
+
+col_metadata$stage <- paste(col_metadata$orig.ident,col_metadata$labels,sep="_")
+merge_active_mat_filter <- human2mouse_gene_act2_mat[,intersect(row.names(col_metadata), colnames(human2mouse_gene_act2_mat))]
+merge_active_mat_mean <- t(apply(merge_active_mat_filter,1,function(x){tapply(x,as.character(col_metadata[names(x),"stage"]),mean)}))
+d <- dist(t(merge_active_mat_mean))
+plot(hclust(d,method = "ward.D2"))
+
+
+```
+
+
+
+

@@ -1,0 +1,422 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### 1. integration of databases TF-targets
+
+#### 1.1 TRANSFACT
+
+```{r}
+library(tidyverse)
+TRANSFACT_TF_Tar <- read_delim("D:/HSC_Autophagy/important_genes/TFs/TRANSFAC Curated Transcription Factor Targets/gene_attribute_edges.txt",delim = "\t",col_names = T) %>% select(target,source,weight)
+TRANSFACT_TF_Tar <- unique(TRANSFACT_TF_Tar[-1,])
+colnames(TRANSFACT_TF_Tar) <- c("tf","target","weight")
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database",recursive = TRUE)
+write_delim(TRANSFACT_TF_Tar,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database/TRANSFAC_curated_network.txt",delim = "\t")
+```
+
+#### 1.2 ENCODE
+```{r}
+ENCODE_TF_Tar <- read_delim("D:/HSC_Autophagy/important_genes/TFs/ENCODE Transcription Factor Targets/gene_attribute_edges.txt",delim = "\t",col_names = T) %>% select(target,source,weight)
+ENCODE_TF_Tar <- unique(ENCODE_TF_Tar[-1,])
+colnames(ENCODE_TF_Tar) <- c("tf","target","weight")
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based",recursive = TRUE)
+write_delim(ENCODE_TF_Tar,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based/ENCODE_curated_network.txt",delim = "\t")
+
+```
+
+#### 1.3 CHEA
+```{r}
+CHEA_TF_Tar <- read_delim("D:/HSC_Autophagy/important_genes/TFs/CHEA Transcription Factor Targets/gene_attribute_edges.txt",delim = "\t",col_names = T) %>% select(target,source,weight)
+CHEA_TF_Tar <- unique(CHEA_TF_Tar[-1,])
+colnames(CHEA_TF_Tar) <- c("tf","target","weight")
+dir.create("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based",recursive = TRUE)
+write_delim(CHEA_TF_Tar,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based/CHEA_curated_network.txt",delim = "\t")
+
+```
+#### 1.4 merge network from msigdb
+
+```{r}
+msigdb_tf <- fgsea::gmtPathways("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/c3.tft.v7.4.symbols.gmt")
+tfs <- names(msigdb_tf)
+msigdb_tbl <- map2_df(.x = tfs,.y = msigdb_tf,.f = function(x,y){
+  data.frame(tf=rep(x,length(y)),target=y,weight=1)
+})
+msigdb_tf <- str_split(msigdb_tbl$tf,pattern = "_")
+msigdb_tbl$tf <- sapply(msigdb_tf,function(x){x[1]})
+tf_genes <- read.table("D:/HSC_Autophagy/3.TFKO_data/Human_TFs/TF_names_v_1.01.txt",sep="\t",header=F)
+tf_genes <- tf_genes$V1
+msigdb_tbl <- msigdb_tbl %>% filter(tf %in% tf_genes)
+write_delim(msigdb_tbl,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database/MSIGDB_curated_network.txt",delim = "\t")
+
+```
+
+#### 1.5 data from 2019-gr
+
+```{r}
+#---database
+file_path <- 'D:/HSC_Autophagy/3.TFKO_data/2019_geno_res/rebuilt.data1/data/TF_target_sources/curated_databases'
+out_dir <- 'D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database/'
+dbs <- list.files(file_path)
+dbs_filter <- dbs[-c(5,9,13,15,16,19:21)]
+lapply(dbs_filter,function(x,in_dir,out_dir){
+  tab <- read_delim(file.path(in_dir,x,"network.sif"),delim = "\t",col_names = TRUE)
+  if(ncol(tab)==2){
+    tab$weight <- rep(1,nrow(tab))
+  }
+  colnames(tab) <- c("tf","target","weight")
+  write_delim(tab,file.path(out_dir,paste(str_to_upper(x),"_curated_network.txt",sep="")),delim = "\t")
+},in_dir=file_path,out_dir=out_dir)
+
+```
+
+
+#### 1.6 2012 Neph TF-TF interaction
+```{r}
+Neph2012_dir <- "D:/HSC_Autophagy/4.TF-Target_data/2012Neph/cell6312mmc4"
+cells <- list.dirs(Neph2012_dir,full.names = F)
+cells <- cells[cells!=""]
+merge_tab <- lapply(cells,function(x,in_dir){
+  tab <- read.table(file.path(in_dir,x,"genes-regulate-genes.txt"),sep="\t",header=F)
+},in_dir=Neph2012_dir)
+merge_df <- do.call(rbind,merge_tab) %>% unique(.)
+colnames(merge_df) <- c("tf","target")
+merge_df$weight <- rep(1,nrow(merge_df))
+write_delim(merge_df,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database/Neph2012_curated_network.txt",delim = "\t")
+
+```
+
+#### 1.7 2016 Marbach
+
+```{r}
+Marbach2016_dir <- "D:/HSC_Autophagy/4.TF-Target_data/Marbach2016/32_high-level_networks"
+Marbach2016_files <- list.files(Marbach2016_dir)
+
+Marbach2016_networks <- lapply(Marbach2016_files,function(x, in_dir){
+  tab <- read_delim(file.path(in_dir,x),delim = "\t",col_names = FALSE)
+  colnames(tab) <- c("tf","target","weight")
+  tab$weight <- (tab$weight-min(tab$weight))/(max(tab$weight)-min(tab$weight))
+  write_delim(tab,file.path("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016",x),delim="\t",col_names = TRUE)
+  tab
+},in_dir=Marbach2016_dir)
+
+```
+
+#### 1.8 TF KO data
+
+```{r}
+TF_KO_tbl <- read_delim("D:/HSC_Autophagy/3.TFKO_data/KnockTF/differential expression of genes in all datasets.txt",delim = "\t",col_names = TRUE)
+tf_genes <- read.table("D:/HSC_Autophagy/3.TFKO_data/Human_TFs/TF_names_v_1.01.txt",sep="\t",header=F)
+TF_KO_filter_sample <- TF_KO_tbl %>% filter(TF == Gene & P_value<0.1 & Log2FC<0 & up_down==2 & TF %in% tf_genes$V1) %>% pull(Sample_ID) %>% unique(.)
+
+TF_KO_tbl_filter <- TF_KO_tbl %>% filter(Sample_ID %in% TF_KO_filter_sample & up_down!=0 & P_value<0.05 & `Mean Expr. of Control` >0 & abs(Log2FC)>1)
+TF_KO_tbl_filter$`-log10P` <- -log10(TF_KO_tbl_filter$P_value)
+TF_KO_tbl_list <- split(TF_KO_tbl_filter,TF_KO_tbl_filter$Sample_ID)
+saveRDS(TF_KO_tbl_list,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/TF_KO_data/KnockTF_filter.rds")
+TF_KO_tbl_list_out <- lapply(TF_KO_tbl_list,function(x){
+  tab <- x[,c("TF","Gene","-log10P")]
+  colnames(tab) <- c("tf","target","weight")
+  tab$weight <- (tab$weight-min(tab$weight))/(max(tab$weight)-min(tab$weight))
+  tab
+})
+
+TF_KO_tbl_list_merge <- integraNets(grnNets = TF_KO_tbl_list_out, keep_neg_regu = FALSE)
+write_delim(TF_KO_tbl_list_merge,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/TF_KO_data/KnockTF_network.txt",delim="\t",col_names = TRUE)
+
+```
+
+
+#### 1.9 merge database source network
+
+```{r}
+database_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database"
+files <- list.files(database_dir)
+
+curated_network <- lapply(files,function(x,in_dir){
+  tab <- read.delim(file.path(in_dir,x),sep="\t",header=T)
+},in_dir=database_dir)
+
+curated_merged_network <- integraNets(grnNets = curated_network, keep_neg_regu = FALSE)
+
+write.table(curated_merged_network,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database_network.txt", sep="\t",row.names=F,quote=F)
+
+```
+
+#### 1.10 TFBS predicting
+
+```{r}
+#----TFBS
+jaspar_2018_predict <- read_delim("D:/HSC_Autophagy/3.TFKO_data/2019_geno_res/rebuilt.data1/data/TF_target_sources/TFBS_scanning/jaspar_2018/network_n1000.sif",delim = "\t",col_names = T)
+colnames(jaspar_2018_predict) <- c("tf","target")
+jaspar_2018_predict$weight <- rep(1,nrow(jaspar_2018_predict))
+write_delim(jaspar_2018_predict,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based/jaspar_2018_TFBS_predicting_network.txt",delim = "\t")
+hocomoco_v11_predict <- read_delim("D:/HSC_Autophagy/3.TFKO_data/2019_geno_res/rebuilt.data1/data/TF_target_sources/TFBS_scanning/hocomoco_v11/network_n1000.sif",delim = "\t",col_names = T)
+colnames(hocomoco_v11_predict) <- c("tf","target")
+hocomoco_v11_predict$weight <- rep(1,nrow(hocomoco_v11_predict))
+write_delim(hocomoco_v11_predict,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based/hocomoco_v11_TFBS_predicting_network.txt",delim = "\t")
+```
+
+#### 1.11 chip-seq based
+
+```{r}
+chipseq_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based"
+files <- list.files(chipseq_dir)
+chipseq_network <- lapply(files,function(x,in_dir){
+  tab <- read.delim(file.path(in_dir,x),sep="\t",header=T)
+  tab
+},in_dir=chipseq_dir)
+chipseq_merged_network <- integraNets(grnNets = chipseq_network, keep_neg_regu = FALSE)
+write.table(chipseq_merged_network,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based_network.txt", sep="\t",row.names=F,quote=F)
+```
+
+### 2. merge all types of networks
+#### 2.1 merge by Marbach2016
+
+```{r}
+library(tidyverse)
+net_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/three_source"
+chip_net <- read_delim(file.path(net_dir,"chipseq_based_network.txt"),delim = "\t",col_names = T)
+database_net <- read_delim(file.path(net_dir,"curated_database_network.txt"),delim = "\t",col_names = T)
+TFKO_net <- read_delim(file.path(net_dir,"KnockTF_network.txt"),delim = "\t",col_names = T)
+merge_data_net <- integraNets(grnNets = list(chip_net, database_net, TFKO_net),keep_neg_regu = FALSE, norm_weight = T, return_sig=F)
+#write_delim(merge_data_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/merged_database_network.txt.gz",delim="\t")
+ggplot(merge_data_net,aes(x=weight,color=tf,group=tf))+ geom_density()+theme(legend.position = "none")
+plot(sort(merge_data_net$weight),type='l')
+#------read Marbach2016 network
+Marbach2016_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016"
+Marbach2016_files <- list.files(Marbach2016_dir)
+Marbach2016_nets <- lapply(Marbach2016_files,function(x, in_dir=in_dir){
+    read_delim(file.path(in_dir,x),delim = "\t",col_names = TRUE)
+  },in_dir=Marbach2016_dir)
+names(Marbach2016_nets) <- Marbach2016_files
+#---merge weight by mean weight score
+merge_net <- function(grnNets){
+  grn_tbl <- grnNets %>% purrr::reduce(dplyr::full_join,by=c("tf","target"))
+  grn_merge <- apply(grn_tbl[,-c(1:2)],1,function(x){mean(x,na.rm=T)})
+  out_frm <- cbind(grn_tbl[,1:2],weight = grn_merge)
+  out_frm[order(out_frm$tf,out_frm$weight,decreasing = c(FALSE,TRUE),method = "radix"),]
+}
+#---merge blood only
+Marbach2016_blood <- merge_net(grnNets = Marbach2016_nets[10:15])
+Marbach2016_blood$weight <- (Marbach2016_blood$weight-min(Marbach2016_blood$weight))/(max(Marbach2016_blood$weight)-min(Marbach2016_blood$weight))
+write_delim(Marbach2016_blood,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/human/Marbach2016_blood_network.txt.gz",delim = "\t")
+Marbach2016_blood_mmu <- hsaToMmu(Marbach2016_blood)
+write_delim(Marbach2016_blood_mmu,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/mouse/Marbach2016_blood_network.txt.gz",delim = "\t")
+#---pantissue
+Marbach2016_pantissue <- merge_net(grnNets = Marbach2016_nets)
+Marbach2016_pantissue$weight <- (Marbach2016_pantissue$weight-min(Marbach2016_pantissue$weight))/(max(Marbach2016_pantissue$weight)-min(Marbach2016_pantissue$weight))
+write_delim(Marbach2016_pantissue,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/human/Marbach2016_pantissue_network.txt.gz",delim = "\t")
+
+Marbach2016_pantissue_mouse <- hsaToMmu(tbl = Marbach2016_pantissue)
+write_delim(Marbach2016_pantissue_mouse,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/mouse/Marbach2016_pantissue_network.txt.gz",delim = "\t")
+```
+
+#### 2.1 merge pan-tissue with database network
+```{r}
+#---get homolog gene
+hsaToMmu <- function(tbl){
+  mouse_homolog <- getHomologGene(input_gene = unique(c(tbl$tf,tbl$target)), output_type = "gene_symbol")
+  mouse_network <- tbl %>% left_join(x = .,y = mouse_homolog, by=c("tf"="Gene_Symbol_human")) %>%
+    left_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+  mouse_network <- mouse_network[,c(4,5,3)]
+  colnames(mouse_network) <- c("tf","target","weight")
+  mouse_network  <- mouse_network %>% distinct(.) %>% na.omit(.)
+  mouse_network
+}
+merge_data_net <- read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/three_source/merged_database_network.txt.gz",delim = "\t",col_names = T)
+#---1.merged pan tissue network with database network
+Marbach2016_pantissue <- read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/human/Marbach2016_pantissue_network.txt.gz",delim = "\t",col_names = T)
+merge_pantissue_net <- integraNets(grnNets = list(Marbach2016_pantissue, merge_data_net), weight = c(1,1),
+                                   keep_neg_regu = FALSE, norm_weight = TRUE, join_type = "full", return_sig=F)
+merge_pantissue_net$weight <- (merge_pantissue_net$weight-min(merge_pantissue_net$weight))/(max(merge_pantissue_net$weight)-min(merge_pantissue_net$weight))
+write_delim(merge_pantissue_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/pantissue_merged_network.txt.gz",delim = "\t")
+#---with filter
+merge_pantissue_net <- integraNets(grnNets = list(Marbach2016_pantissue, merge_data_net), weight = c(1,1),
+                                   keep_neg_regu = FALSE, norm_weight = TRUE, join_type = "full", return_sig=T,
+                                   ncores = 6, maxInter = 5, min_target_num = 100, max_target_num = 5000)
+merge_pantissue_net$weight <- (merge_pantissue_net$weight-min(merge_pantissue_net$weight))/(max(merge_pantissue_net$weight)-min(merge_pantissue_net$weight))
+write_delim(merge_pantissue_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/pantissue_merged_filter_network.txt.gz",delim = "\t")
+
+merge_pantissue_net_mmu <- hsaToMmu(merge_pantissue_net)
+write_delim(merge_pantissue_net_mmu,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/pantissue_merged_filter_network.txt.gz",delim = "\t")
+
+#---2.merged blood network with database network
+Marbach2016_blood <- readr::read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016_pantissue_blood/human/Marbach2016_blood_network.txt.gz",delim = "\t",col_names = T)
+Marbach2016_blood %>% filter(tf %in% "RUNX1")
+
+merge_blood_net <- integraNets(grnNets = list(Marbach2016_blood, merge_data_net), weight = c(1,1),
+                               keep_neg_regu = FALSE, norm_weight = TRUE, join_type = "full", return_sig=T,
+                               ncores = 6, maxInter = 10, min_target_num = 100, max_target_num = 5000)
+merge_blood_net$weight <- (merge_blood_net$weight-min(merge_blood_net$weight))/(max(merge_blood_net$weight)-min(merge_blood_net$weight))
+dim(merge_blood_net[merge_blood_net$tf=="RUNX1",])
+dim(merge_blood_net[merge_blood_net$tf=="NKX2-1",])
+write_delim(merge_blood_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/blood_merged_filter_strict_network.txt.gz",delim = "\t")
+merge_blood_net_mmu <- hsaToMmu(merge_blood_net)
+write_delim(merge_blood_net_mmu,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_strict_network.txt.gz",delim = "\t")
+
+#---3. merge network per tissue with database network
+Marbach2016_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016"
+Marbach2016_files <- list.files(Marbach2016_dir)
+Marbach2016_merged_nets <- lapply(Marbach2016_files,function(x, nets){
+  net_data <- read_delim(file.path("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Marbach2016",x),delim = "\t",col_names = TRUE)
+  merge_net <- integraNets(grnNets = list(net_data, nets), weight = c(1,1), keep_neg_regu = FALSE, norm_weight = TRUE, join_type = "full", return_sig=F, ncores = 6)
+  merge_net$weight <- (merge_net$weight-min(merge_net$weight))/(max(merge_net$weight)-min(merge_net$weight))
+  write_delim(merge_net,file.path("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/Marbach2016_merged",x),delim = "\t")
+  merge_net_mouse <- hsaToMmu(merge_net)
+  write_delim(merge_net_mouse,file.path("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/Marbach2016_merged",x),delim = "\t")
+},nets=merge_data_net)
+
+```
+
+#### 2.2 filter networks 
+
+```{r}
+library(tidyverse)
+hsaToMmu <- function(tbl){
+  mouse_homolog <- getHomologGene(input_gene = unique(c(tbl$tf,tbl$target)), output_type = "gene_symbol")
+  mouse_network <- tbl %>% left_join(x = .,y = mouse_homolog, by=c("tf"="Gene_Symbol_human")) %>%
+    left_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+  mouse_network <- mouse_network[,c(4,5,3)]
+  colnames(mouse_network) <- c("tf","target","weight")
+  mouse_network  <- mouse_network %>% distinct(.) %>% na.omit(.)
+  mouse_network
+}
+#---mouse
+pantissue_net <- read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/merged_network/human/pantissue_merged_network.txt.gz",delim = "\t")
+pantissue_net_filter <- filterNets(df = pantissue_net,minSize = 100,maxSize = 10000,maxInter = 10,ncores = 6)
+write_delim(pantissue_net_filter,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/human/pantissue_merged_network.txt.gz",delim = "\t")
+pantissue_net_filter_mm <- hsaToMmu(pantissue_net_filter)
+
+
+```
+
+
+
+```{r}
+Marbach2016_merged_network_by_tissue <- lapply(Marbach2016_files, function(x, net, in_dir){
+  tab <- read_delim(file.path(in_dir,x),delim = "\t",col_names = TRUE)
+  out_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/Merged_Marbach2016"
+  dir.create(out_dir,recursive = T)
+  write_delim(merge_tab,file.path(out_dir,x),delim="\t",col_names = TRUE)
+  #mouse
+  mouse_homolog <- getHomologGene(input_gene = unique(c(merge_tab$tf,merge_tab$target)), output_type = "gene_symbol")
+  pantissue_network_mm <- merge_tab %>% left_join(x = .,y = mouse_homolog, by=c("tf"="Gene_Symbol_human")) %>%
+  left_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+  pantissue_network_mm <- pantissue_network_mm[,c(4,5,3)]
+  colnames(pantissue_network_mm) <- c("tf","target","weight")
+  pantissue_network_mm  <- pantissue_network_mm %>% distinct(.) %>% na.omit(.)
+  out_dir2 <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/Merged_Marbach2016"
+  dir.create(out_dir2,recursive = T)
+  write_delim(pantissue_network_mm,file.path(out_dir2,x),delim="\t",col_names = TRUE)
+  merge_tab
+},net=merge_net,in_dir=Marbach2016_dir)
+names(Marbach2016_merged_network_by_tissue) <- Marbach2016_files
+saveRDS(Marbach2016_merged_network_by_tissue,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/Marbach2016_merged_network_32_tissue.rds")
+
+Marbach2016_merged_network_by_tissue <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/Marbach2016_merged_network_32_tissue.rds")
+Runx1_tab <- Marbach2016_merged_network_by_tissue[[1]] %>% dplyr::filter(tf == "RUNX1")
+#---human blood
+hs_blood_networks <- Marbach2016_merged_network_by_tissue[10:15]
+hs_blood_networks_merge <- integraNets(grnNets = hs_blood_networks, norm_weight = FALSE,return_sig = FALSE,ncores = 6)
+write_delim(hs_blood_networks_merge,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/Marbach2016_blood_network.txt.gz",delim="\t",col_names = TRUE)
+#---mouse blood
+mouse_homolog <- getHomologGene(input_gene = unique(c(hs_blood_networks_merge$tf,hs_blood_networks_merge$target)))
+mm_blood_networks_merge <- hs_blood_networks_merge %>% inner_join(x = .,y = mouse_homolog, by=c("tf"="Gene_Symbol_human")) %>% inner_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+mm_blood_networks_merge <- mm_blood_networks_merge[,c(4,5,3)]
+colnames(mm_blood_networks_merge) <- c("tf","target","weight")
+write_delim(mm_blood_networks_merge,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/Marbach2016_blood_network.txt.gz",delim="\t",col_names = TRUE)
+
+#---human pantissue
+hs_Marbach2016_merged_pan_tissue_networks <- integraNets(grnNets = Marbach2016_merged_network_by_tissue, norm_weight = FALSE, return_sig = TRUE, ncores = 16)
+write_delim(hs_Marbach2016_merged_pan_tissue_networks,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/Marbach2016_pantissue_network.txt.gz",delim="\t",col_names = TRUE)
+
+mouse_homolog <- getHomologGene(input_gene = unique(c(hs_Marbach2016_merged_pan_tissue_networks$tf, hs_Marbach2016_merged_pan_tissue_networks$target)))
+mm_merged_pan_tissue_networks <- hs_Marbach2016_merged_pan_tissue_networks %>% inner_join(x = .,y = mouse_homolog, by=c("tf"="Gene_Symbol_human")) %>% inner_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+mm_merged_pan_tissue_networks <- mm_merged_pan_tissue_networks[,c(4,5,3)]
+colnames(mm_merged_pan_tissue_networks) <- c("tf","target","weight")
+write_delim(mm_merged_pan_tissue_networks,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/Marbach2016_pantissue_network.txt.gz",delim="\t",col_names = TRUE)
+
+```
+
+#### 2.2 merge by tissue specific
+
+```{r}
+# get database net
+database_net <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/curated_database_network.txt",sep="\t",header=T)
+chipseq_net <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/chipseq_based_network.txt",sep="\t",header=T)
+tfko_net <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/KnockTF_network.txt",sep="\t",header=T)
+merge_net <- integraNets(list(database_net, chipseq_net, tfko_net),norm_weight = FALSE,keep_neg_regu = FALSE)
+
+GTEx_dir <- "D:/HSC_Autophagy/3.TFKO_data/2019_geno_res/rebuilt.data1/data/TF_target_sources/inferred/GTEx/tissue_specific"
+GTEx_tissue <- list.dirs(GTEx_dir,full.names = FALSE)[-1]
+tf_genes <- read.table("D:/HSC_Autophagy/3.TFKO_data/Human_TFs/TF_names_v_1.01.txt",sep="\t",header=F)
+tf_genes <- tf_genes$V1
+GTEx_merged_network <- lapply(GTEx_tissue,function(x, net, tf_genes, in_dir){
+  tab <- read_delim(file.path(in_dir,x,"network.txt"),delim = "\t",col_names = TRUE)
+  merge_tab <- integraNets(grnNets = list(tab, net), norm_weight = TRUE, keep_neg_regu = FALSE)
+  merge_tab <- merge_tab %>% filter(tf %in% tf_genes)
+  write_delim(merge_tab,file.path("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/Merged_GTEx_network",paste(x,".txt.gz",sep="")),delim="\t", col_names = TRUE)
+merge_tab
+},net=merge_net, in_dir=GTEx_dir,tf_genes=tf_genes)
+names(GTEx_merged_network) <- GTEx_tissue
+
+tissue_specific_net <- GTEx_merged_network
+saveRDS(tissue_specific_net,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/GTEx_network.rds")
+
+#---pantissue network
+pantissue_network <- read_delim("D:/HSC_Autophagy/3.TFKO_data/2019_geno_res/rebuilt.data1/data/TF_target_sources/inferred/GTEx/pantissue/network_i2.sif",delim ="\t")
+pantissue_network$effect <- rep(1,nrow(pantissue_network))
+pantissue_merge_network <- integraNets(grnNets = list(pantissue_network, merge_net), norm_weight = TRUE, keep_neg_regu = FALSE)
+pantissue_merge_network <- pantissue_merge_network %>% filter(tf %in% tf_genes)
+write_delim(pantissue_merge_network,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/pantissue_merge_network.txt.gz",delim="\t",col_names = TRUE)
+
+
+```
+
+#### 2.3. get homolog genes
+
+
+```{r}
+pantissue_network <- read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/pantissue_merge_network.txt.gz",delim = "\t",col_names = T)
+mouse_homolog <- getHomologGene(input_gene = unique(c(pantissue_network$tf,pantissue_network$target)), output_type = "gene_symbol")
+pantissue_network_mm <- pantissue_network %>% left_join(x = .,y = mouse_homolog,by=c("tf"="Gene_Symbol_human")) %>%
+  left_join(x = .,y = mouse_homolog,by=c("target"="Gene_Symbol_human"))
+pantissue_network_mm <- pantissue_network_mm[,c(4,5,3)]
+colnames(pantissue_network_mm) <- c("tf","target","weight")
+pantissue_network_mm  <- pantissue_network_mm %>% distinct(.) %>% na.omit(.)
+
+write_delim(unique(pantissue_network_mm),"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/mm_pantissue_network.txt.gz",delim="\t",col_names = TRUE)
+
+mm_pantissue_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/mm_pantissue_network.txt.gz",sep="\t",header=T)
+saveRDS(mm_pantissue_network,"./inst/extdata/mm_pantissue_network.rds")
+hs_pantissue_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/pantissue_merge_network.txt.gz",sep="\t",header=T)
+saveRDS(hs_pantissue_network,"./inst/extdata/hs_pantissue_network.rds")
+
+#---merge doro
+hs_pantissue_network <- readRDS("./inst/extdata/hs_pantissue_network.rds")
+mm_pantissue_network <- readRDS("./inst/extdata/mm_pantissue_network.rds")
+hs_doro <- dorothea_regulons$hs_regulons[,c(1,3,4)]
+mm_doro <- dorothea_regulons$mm_regulons[,c(1,3,4)]
+colnames(hs_doro)[3] <- "weight"
+hs_pantissue_network_merge <- integraNets(grnNets = list(hs_pantissue_network,hs_doro),weight = c(0.5,0.5),ncores = 6,return_sig = T)
+saveRDS(hs_pantissue_network_merge,"./inst/extdata/hs_pantissue_network.rds")
+mm_pantissue_network_merge <- integraNets(grnNets = list(mm_pantissue_network,mm_doro),weight = c(0.5,0.5),ncores = 6,return_sig = T)
+saveRDS(mm_pantissue_network_merge,"./inst/extdata/mm_pantissue_network.rds")
+
+#---get all pantissue
+hs_pantissue_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/pantissue_merge_network.txt.gz",sep="\t",header=T)
+hs_pantissue_network_merge <- integraNets(grnNets = list(hs_pantissue_network,hs_doro),weight = c(0.5,0.5),ncores = 6,return_sig = F)
+write.table(hs_pantissue_network_merge,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/human/hs_pantissue_network.txt.gz",sep="\t",row.names = FALSE,quote=F)
+mm_pantissue_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/mm_pantissue_network-v1.txt.gz",sep="\t",header=T)
+mm_pantissue_network_merge <- integraNets(grnNets = list(mm_pantissue_network, mm_doro),weight = c(0.5,0.5),ncores = 6,return_sig = F)
+write.table(mm_pantissue_network_merge,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/mouse/mm_pantissue_network.txt.gz",sep="\t",row.names = FALSE,quote=F)
+
+NKX2_1_tab <- hs_pantissue_network_merge %>% filter(tf %in% "NKX2-1")
+
+
+
+```
+
+
+

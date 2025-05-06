@@ -1,0 +1,61 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### 1.load data
+
+```{r}
+count_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/exp_data/old_files/Nkx2_1_KO_epi_counts.txt",sep="\t",header=T,row.names=1,check.names=F)
+col_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/exp_data/old_files/Nkx2_1_KO_epi_metadata.txt",sep="\t",header=T,check.names=F)
+count_data_filter <- count_data[apply(count_data,1,function(x){length(x[which(x>0)])>=10}),]
+TF_genes <- intersect(TF_Symbols$mouse,row.names(count_data_filter))
+atfr <- scATFR(exp_data = count_data_filter,col_data = col_data)
+atfr@metadata$scATFR@metadata[["TFs"]] <- TF_genes
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/exp_data/Nkx2_1_KO_epi_cell_atfr_object.rds")
+
+```
+
+#### 1.2 calculate GRNs
+
+```{r}
+library(scATFR)
+atfr <- readRDS("Nkx2_1_KO_epi_cell_atfr_object.rds")
+run_time <- list()
+for(i in c("pidc","pcor","sclink")){
+  st <- proc.time()
+  atfr <- inferGRNs(atfr,method=i,ncores=24)
+  diff_time <- proc.time()-st
+  run_time[[i]] <- diff_time
+  saveRDS(Regulon(atfr),paste(i,"_GRN_mat.rdx",sep=""))
+}
+
+st <- proc.time()
+atfr <- inferGRNs(atfr, method="genie3", use_regulator=atfr@metadata$scATFR@metadata$TFs, ncores=16)
+diff_time <- proc.time()-st
+run_time[["genie3"]] <- diff_time
+saveRDS(Regulon(atfr,i),paste(i,"_GRN_mat.rdx",sep=""))
+saveRDS(atfr,"Nkx2_1_KO_epi_cell_atfr_object_with_grns.rds")
+saveRDS(run_time,"Nkx2_1_KO_grns_run_time.rds")
+
+```
+
+### 2.1 load GRNs 
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/sclink_GRN_mat.rds")
+GRNs(atfr)
+
+
+
+
+
+
+```
+
+
+
+
+
+
+

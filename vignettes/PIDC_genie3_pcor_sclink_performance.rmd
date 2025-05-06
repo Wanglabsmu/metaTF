@@ -1,0 +1,44 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### 1.1 GRN tools performance
+
+```{r}
+library(dplyr)
+Nkx2.1_atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/old_files/GRNs_sclink.rds")[[1]]
+GRNs_genie3 <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/GRNs_genie3_matrix.rds")
+GRNs_pidc <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/GRNs_pidc_matrix.rds")
+GRNs_pcor <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Nkx2-1_KO/GRNs/GRNs_pcor_matrix.rds")
+
+mm_regulons <- dorothea_regulons$mm_regulons
+mm_regulons <- mm_regulons %>% filter(tf %in% c("Nkx2-1","Runx1"))
+mm_regulons <- split(mm_regulons$target,mm_regulons$tf)
+
+genie3_grn_auc <- regulonActivity(x = t(as.matrix(GRNs_genie3)), gene_list=mm_regulons, method="aucell", max_target_num = 5000)
+pidc_grn_auc <- regulonActivity(x = t(as.matrix(GRNs_pidc[c("Nkx2-1","Runx1"),,drop=FALSE])), gene_list=mm_regulons, method="aucell", max_target_num = 5000)
+pcor_grn_auc <- regulonActivity(x = t(as.matrix(GRNs_pcor[c("Nkx2-1","Runx1"),,drop=FALSE])), gene_list=mm_regulons, method="aucell", max_target_num = 5000)
+genie3_grn_auc
+pidc_grn_auc
+pcor_grn_auc
+
+
+```
+
+### 1.2 CRISPRi PIDC evaluation
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/diff_cells/grns.rds")
+PIDC_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/GRNs/PIDC_GRN.rds")
+GRN(atfr,"pidc") <- PIDC_mat
+```
+
+
+
+
+
+
+
+
+

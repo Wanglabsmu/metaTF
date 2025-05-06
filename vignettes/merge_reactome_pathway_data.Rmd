@@ -1,0 +1,39 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#### 1.1 get pathway regulons
+
+```{r}
+library(tidyverse)
+reactome_pathway <- readr::read_delim("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Pathway_data/Reactome_pathway/NCBI2Reactome_All_Levels.txt",delim="\t",col_names = F)
+reactome_pathway_filter <- reactome_pathway[,c('X1', 'X4', 'X6')]
+reactome_pathway_filter$X4 <- str_replace(string = reactome_pathway_filter$X4,pattern = "[:blank:]$",replacement = "")
+gene_infor <- read_delim("D:/HSC_Autophagy/important_genes/orthlogo_gene/NCBI/gene_info/gene_info",delim="\t",col_names = T)
+gene_infor_filter <- gene_infor[-1,2:3] %>% filter(X2 %in% reactome_pathway_filter$X1)
+reactome_pathway_filter$X1 <- as.character(reactome_pathway_filter$X1)
+reactome_pathway_merge <- inner_join(x = reactome_pathway_filter, y = gene_infor_filter,by=c("X1"="X2"))
+colnames(reactome_pathway_merge) <- c('gene_id',"pathway_name","species","gene_name")
+reactome_pathway_merge <- reactome_pathway_merge[,2:4]
+reactome_pathway_merge <- na.omit(reactome_pathway_merge)
+
+species <- names(table(reactome_pathway_merge$species))
+species_pathway <- lapply(species,function(x,reactome_pathway_merge){
+  pathway_tab <- reactome_pathway_merge %>% filter(species %in% x)
+  pathway_list <- split(as.character(pathway_tab$gene_name), 
+                        as.character(pathway_tab$pathway_name))
+  pathway_list
+},reactome_pathway_merge=reactome_pathway_merge)
+names(species_pathway) <- species
+
+species_pathway_filter <- lapply(species_pathway, function(x){
+  pathway_gene_num <- sapply(x,length)
+  pathway_gene_num_median <- pathway_gene_num[pathway_gene_num>=10]
+  pathway_gene_num_median <- pathway_gene_num_median[pathway_gene_num_median<2000]
+  x[names(pathway_gene_num_median)]
+})
+saveRDS(species_pathway_filter,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/Pathway_data/Reactome_pathway/Reactome_pathway_NCBI_symbol_by_species.rds")
+
+
+```
+

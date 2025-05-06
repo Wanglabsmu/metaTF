@@ -1,0 +1,200 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1.1 reduce dimi with seurat
+
+```{r}
+library(Seurat)
+SPF_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/mouse_SPF_matrix_filter.rds")
+SPF_exp_mat <- SPF_exp_data[,-1]
+row.names(SPF_exp_mat) <- SPF_exp_data[[1]]
+
+SPF <- CreateSeuratObject(counts = SPF_exp_mat, project = "SPF_HSC")
+SPF[["percent.mt"]] <- PercentageFeatureSet(SPF, pattern = "^Mt-")
+head(SPF@meta.data, 5)
+VlnPlot(SPF, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+SPF <- NormalizeData(SPF, normalization.method = "LogNormalize", scale.factor = 10000)
+SPF <- FindVariableFeatures(SPF, selection.method = "vst", nfeatures = 2000)
+SPF <- ScaleData(SPF, use.umi=T)
+SPF <- RunPCA(SPF, features = VariableFeatures(object = SPF))
+DimPlot(SPF, reduction = "pca",group.by = "orig.ident")
+SPF <- FindNeighbors(SPF, dims = 1:50)
+SPF <- FindClusters(SPF, resolution = 0.1)
+head(Idents(SPF), 5)
+SPF <- RunUMAP(SPF, umap.method ="uwot", dims = 1:50)
+DimPlot(SPF, reduction = "umap", label = TRUE, label.size=4)
+cluster_markers <- FindAllMarkers(SPF)
+#HSC
+VlnPlot(SPF,features = c("Procr","Esam","Slamf1","Trpc6"),slot="data")
+#MEP
+VlnPlot(SPF,features = c("Hba-a1","Smim1"),slot="data")
+VlnPlot(SPF,features = c("Klf1","Gata2"),slot="data")
+
+write.table(cluster_markers,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/markers/mouse_SPF_markers.txt",sep="\t",quote=F,row.names = F)
+
+new_cluster_ids <- c("HSC/MPP","MEP","GMP","MEP", "NK cells", "NK cells")
+names(new_cluster_ids) <- levels(SPF)[1:5]
+SPF@meta.data$stage <- new_cluster_ids[SPF@meta.data$seurat_clusters]
+saveRDS(SPF,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/mouse_SPF_seu.rds")
+
+SPF_sce <- importFromSeurat(SPF)
+SPF_mean_exp <- summarizeClusterValue(object = SPF_sce,clust_name = "stage",value = "mean",use_assay = "logcounts")
+
+
+d <- dist(t(mean_exp))
+hc <- hclust(d)
+
+
+```
+
+#### 1.2 infering cell types using SingleR
+```{r}
+SPF <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/mouse_SPF_seu.rds")
+SPF_sce <- importFromSeurat(object = SPF)
+celldex_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/cell_markers/human_mouse_celldex.rds")
+mouse_HSC <- celldex_data$Novershtern
+be_res <- celldex_data$Blueprint
+library(SingleR)
+pred_SPF_sce <- SingleR(test = SPF_sce, ref = be_res, assay.type.test=1, labels = be_res$label.main)
+table(pred_SPF_sce$labels)
+SPF@meta.data$labels <- pred_SPF_sce[row.names(SPF@meta.data),"labels"]
+DimPlot(SPF, reduction = "umap", label = TRUE, label.size=4,group.by = "labels")
+cell_ratio <- apply(table(SPF@meta.data$labels,SPF@meta.data$seurat_clusters),2,function(x){x/sum(x)})
+
+new_cluster_ids <- c("GMP","HSC/MPP","CLP","MEP", "NK cells")
+names(new_cluster_ids) <- levels(SPF)
+HD4@meta.data$stage <- new_cluster_ids[HD4@meta.data$seurat_clusters]
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4,group.by = "stage")
+saveRDS(SPF,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/mouse_SPF_seu.rds")
+
+```
+
+
+
+
+
+
+
+#### 2.1 mapping
+
+```{r}
+library(Seurat)
+SPF <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/mouse_SPF_seu.rds")
+HD4 <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/human_HD4_seu.rds")
+SPF <- SCTransform(SPF, verbose = FALSE)
+HD4 <- SCTransform(HD4, verbose = FALSE)
+
+HD4_SPF_merge <- RunCCA(object1 = HD4,object2 = SPF)
+
+anchors <- FindTransferAnchors(
+  reference = SPF,
+  query = HD4,
+  normalization.method = "SCT",
+  reference.reduction = "SCT",
+  dims = 1:50
+)
+
+```
+
+
+
+
+
+
+
+
+
+#### 1.2 load data from Seurat
+
+```{r}
+SPF <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/objects/mouse_SPF_seu.rds")
+atfr <- importFromSeurat(object = SPF)
+scater::plotReducedDim(object = atfr,dimred = "UMAP",colour_by = "stage")
+scater::plotReducedDim(object = atfr,dimred = "UMAP",colour_by = "Esam")
+scater::plotReducedDim(object = atfr,dimred = "UMAP",colour_by = "Myl10")
+scater::plotReducedDim(object = atfr,dimred = "UMAP",colour_by = "Procr")
+
+
+scater::plotReducedDim(object = atfr,dimred = "UMAP",colour_by = "Hba-a1")
+
+
+```
+
+
+#### 2.1 get expression matrix and map
+
+```{r}
+library(dplyr)
+
+HD4 <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+SPF <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/mouse_SPF_matrix_filter.rds")
+colnames(SPF)[-1] <- paste(colnames(SPF)[-1],"mouse",sep='_')
+human2mouse_gene <- getHomologGene()
+human2mouse_gene_exp1 <- left_join(human2mouse_gene,y = HD4, by=c('Gene_Symbol_human'='gene_symbol'))
+human2mouse_gene_exp2 <- left_join(x=human2mouse_gene_exp1,y = SPF, by=c('Gene_Symbol_mouse'='X1'))
+human2mouse_gene_exp2[is.na(human2mouse_gene_exp2)] <- 0
+human2mouse_gene_exp2 <- human2mouse_gene_exp2[rowSums(human2mouse_gene_exp2[,-c(1:2)])>0,]
+
+HD4_sig <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/markers/human_HD4_markers.txt",sep="\t",header=T)
+SPF_sig <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/markers/mouse_SPF_markers.txt",sep="\t",header=T)
+human2mouse_gene_select <- human2mouse_gene_exp2 %>% filter(Gene_Symbol_human %in% HD4_sig$gene | Gene_Symbol_mouse %in% SPF_sig$gene)
+
+human2mouse_gene_exp <- as.matrix(human2mouse_gene_select[,-c(1:2)])
+
+anno_col <- data.frame(type=c(rep("human",ncol(HD4)-1),rep("mouse",ncol(SPF)-1)))
+row.names(anno_col) <- colnames(human2mouse_gene_exp)
+library(pheatmap)
+p <- pheatmap(human2mouse_gene_exp,scale = "row",show_colnames = F,show_rownames = F,annotation_col = anno_col)
+
+
+human2mouse_gene_overlap <- human2mouse_gene %>% filter(Gene_Symbol_10090 %in% row.names(SPF_sce))
+
+HD4_sce <- HD4_sce[row.names(HD4_sce) %in% human2mouse_gene_overlap$Gene_Symbol_9606,]
+rowData(HD4_sce)$feature_symbol <- rownames(HD4_sce)
+
+SPF_exp_mat <-assay(SPF_sce,"counts")
+SPF_exp_tbl <- tibble(gene_name =row.names(SPF_exp_mat),as.data.frame(SPF_exp_mat))
+SPF_exp_mat_merge <- left_join(human2mouse_gene_overlap,SPF_exp_tbl,by=c('Gene_Symbol_10090'='gene_name'))
+SPF_exp_mat_merge <- SPF_exp_mat_merge[,-2]
+SPF_exp_mat_merge_a <- SPF_exp_mat_merge %>% group_by(Gene_Symbol_9606) %>% summarise_all(sum)
+
+SPF_exp_mat_merge_a <- SPF_exp_mat_merge[,apply(.SD,2,sum),by=Gene_Symbol_9606]
+colnames(SPF_exp_mat_merge_a) <- paste('mouse',colnames(SPF_exp_mat_merge_a),sep="_")
+SPF_exp_filter <- as.matrix(SPF_exp_mat_merge_a[,-1])
+row.names(SPF_exp_filter) <- SPF_exp_mat_merge_a$mouse_Gene_Symbol_9606
+SPF_sce <- scATFR(SPF_exp_filter,col_data = SPF@meta.data)
+
+SPF_sce <- importFromSeurat(SPF)
+
+library(scmap)
+rowData(SPF_sce)$feature_symbol <- rownames(SPF_sce)
+SPF_sce <- selectFeatures(SPF_sce, suppress_plot = FALSE,n_features = 2000)
+SPF_sce <- indexCluster(SPF_sce, cluster_col = "seurat_clusters")
+
+scmapCluster_results <- scmapCluster(
+  projection = SPF_sce, 
+  index_list = list(
+    HD4_sce = metadata(SPF_sce)$scmap_cluster_index
+  )
+)
+
+plot(
+  getSankey(
+    colData(HD4_sce)$seurat_clusters, 
+    scmapCluster_results$scmap_cluster_labs,
+    plot_height = 400
+  )
+)
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,21 @@
+---
+title: "Nrf1"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+
+```{r}
+counts_mat <- read.csv("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Nrf1_KO/GSE163630_Seurat_count_matrix.csv.gz")
+col_data <- read.csv("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Nrf1_KO/GSE163630_Seurat_metadata.csv.gz",row.names=1)
+
+Nrf1_KO <- CreateSeuratObject(counts = counts_mat, project = "KO")
+Nrf1_KO@meta.data <- col_data
+VlnPlot(Nrf1_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,group.by = "orig.ident")
+
+
+
+
+```
+

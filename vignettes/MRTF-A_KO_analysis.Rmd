@@ -1,0 +1,52 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+```{r}
+WT_PP_matrix <- Seurat::Read10X("../ext_data/NRTF-A_KO/WT")
+colnames(WT_PP_matrix) <- paste("WT_",colnames(WT_PP_matrix),sep="")
+WT_PP <- CreateSeuratObject(counts = WT_PP_matrix, project = "WT")
+
+KO_PP_matrix <- Seurat::Read10X("../ext_data/NRTF-A_KO/KO")
+colnames(KO_PP_matrix) <- paste("KO_",colnames(KO_PP_matrix),sep="")
+KO_PP <- CreateSeuratObject(counts = KO_PP_matrix, project = "KO")
+
+######
+MRTF_KO <- merge(x=WT_PP,y=KO_PP, project = 'MRTF_KO' )
+
+MRTF_KO[["percent.mt"]] <- PercentageFeatureSet(MRTF_KO, pattern = "^mt-")
+MRTF_KO <- subset(MRTF_KO, subset = nFeature_RNA > 1000 & nFeature_RNA < 7000 & percent.mt < 10)
+VlnPlot(MRTF_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+head(MRTF_KO@meta.data, 5)
+
+plot1 <- FeatureScatter(MRTF_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(MRTF_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(MRTF_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+MRTF_KO <- NormalizeData(MRTF_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+MRTF_KO <- FindVariableFeatures(MRTF_KO, selection.method = "vst", nfeatures = 2000)
+MRTF_KO <- ScaleData(MRTF_KO, use.umi=T)
+MRTF_KO <- RunPCA(MRTF_KO, features = VariableFeatures(object = MRTF_KO))
+DimPlot(MRTF_KO, reduction = "pca")
+MRTF_KO <- FindNeighbors(MRTF_KO, dims = 1:50)
+MRTF_KO <- FindClusters(MRTF_KO)
+MRTF_KO <- RunTSNE(object = MRTF_KO, dims.use = 1:50)
+DimPlot(MRTF_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(MRTF_KO, reduction = "tsne",features = "Mkl1")
+
+MRTF_KO <- RunUMAP(MRTF_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(MRTF_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(MRTF_KO, reduction = "umap",features = "Mkl1")
+FeaturePlot(MRTF_KO, reduction = "umap",features = "Mkl1",split.by = "orig.ident")
+VlnPlot(MRTF_KO, features = c("Mkl1"), group.by = "orig.ident",ncol = 3)
+
+
+```
+

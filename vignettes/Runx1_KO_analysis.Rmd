@@ -1,0 +1,96 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### 1. load data
+```{r}
+count_mat <- Matrix::readMM("../ext_data/Runx1_KO/raw_data/gene_by_cell_count_matrix.txt.gz")
+col_data <- read.csv("../ext_data/Runx1_KO/raw_data/cell_annotation.csv.gz",row.names=1)
+gene_anno <- read.csv("../ext_data/Runx1_KO/raw_data/gene_annotation.csv.gz",row.names=1)
+colnames(count_mat) <- row.names(col_data)
+row.names(count_mat) <- row.names(gene_anno)
+count_mat <- as.matrix(count_mat)
+
+duplicated_gene_name <- gene_anno[duplicated(gene_anno$gene_short_name),"gene_short_name"]
+duplicated_gene_anno <- gene_anno[gene_anno$gene_short_name %in% duplicated_gene_name,]
+duplicated_counts_mat <- count_mat[row.names(duplicated_gene_anno),]
+library(parallel)
+cl <- makeCluster(6)
+duplicated_counts_mat_merge <- pbapply::pbapply(duplicated_counts_mat,2,function(x,duplicated_gene_anno){tapply(x,duplicated_gene_anno[names(x),"gene_short_name"],sum)},cl=cl,duplicated_gene_anno=duplicated_gene_anno)
+stopCluster(cl)
+unique_count_mat <- count_mat[setdiff(row.names(count_mat),row.names(duplicated_counts_mat)),]
+row.names(unique_count_mat) <- gene_anno[row.names(unique_count_mat),"gene_short_name"]
+
+final_count_mat <- rbind(unique_count_mat,duplicated_counts_mat)
+final_count_frm <- data.frame(gene_name=row.names(final_count_mat),final_count_mat,check.names = F)
+saveRDS(final_count_frm,"../ext_data/Runx1_KO/Runx1_KO_count_mat.rds")
+saveRDS(col_data,"../ext_data/Runx1_KO/Runx1_KO_colData.rds")
+library(data.table)
+fwrite(as.data.table(final_count_frm),"../ext_data/Runx1_KO/Runx1_KO_count_mat.tsv",sep="\t")
+fwrite(as.data.table(col_data),"../ext_data/Runx1_KO/Runx1_KO_colData.tsv",sep="\t")
+
+```
+
+#### 2. seurat_analysis
+
+```{r}
+count_tab <- readRDS("../ext_data/Runx1_KO/Runx1_KO_count_mat.rds")
+count_mat <- as.matrix(count_tab[,-1])
+row.names(count_mat) <- count_tab[,1]
+col_data <- read.table("../ext_data/Runx1_KO/Runx1_KO_colData.tsv",sep="\t",header=T,row.names=1)
+library(Seurat)
+Runx1_KO <- CreateSeuratObject(counts = count_mat, project = "Runx1_KO")
+Runx1_KO@meta.data$orig.ident <- col_data[row.names(Runx1_KO@meta.data),'Dataset']
+Runx1_KO[["percent.mt"]] <- PercentageFeatureSet(Runx1_KO, pattern = "^mt-")
+head(Runx1_KO@meta.data, 5)
+
+plot1 <- FeatureScatter(Runx1_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(Runx1_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(Runx1_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+Runx1_KO <- subset(Runx1_KO, subset = nFeature_RNA > 2000 & nFeature_RNA < 7000 & percent.mt < 10)
+VlnPlot(Runx1_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+Runx1_KO <- NormalizeData(Runx1_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+Runx1_KO <- FindVariableFeatures(Runx1_KO, selection.method = "vst", nfeatures = 2000)
+Runx1_KO <- ScaleData(Runx1_KO, use.umi=T)
+Runx1_KO <- RunPCA(Runx1_KO, features = VariableFeatures(object = Runx1_KO))
+DimPlot(Runx1_KO, reduction = "pca")
+Runx1_KO <- FindNeighbors(Runx1_KO, dims = 1:50)
+Runx1_KO <- FindClusters(Runx1_KO)
+Runx1_KO <- RunTSNE(object = Runx1_KO, dims.use = 1:50)
+DimPlot(Runx1_KO, reduction = "tsne", label = TRUE, label.size=4, group.by = "orig.ident")
+
+Runx1_KO <- RunUMAP(Runx1_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(Runx1_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(Runx1_KO, reduction = "tsne",features = "Runx1",split.by = "orig.ident")
+
+
+
+```
+
+
+
+
+
+
+```{r}
+library(data.table)
+count_tab <- fread("../ext_data/Runx1_KO/Runx1_KO_count_mat.tsv",sep="\t",data.table=F)
+count_mat <- count_tab[,-1]
+row.names(count_mat) <- count_tab[,1]
+col_data <- fread("../ext_data/Runx1_KO/Runx1_KO_colData.tsv",sep="\t",data.table=F)
+row.names(col_data) <- col_data[,1]
+
+
+
+```
+
+

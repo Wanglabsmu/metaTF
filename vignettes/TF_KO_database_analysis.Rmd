@@ -1,0 +1,24 @@
+---
+title: "TFKO_analysis"
+author: "Puwen Tan"
+date: "2021/6/23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+diff_KO_data <- data.table::fread("D:/HSC_Autophagy/3.TFKO_data/KnockTF/differential expression of genes in all datasets.txt",sep="\t",header=T)
+TF_list <- unique(dorothea_regulons$hs_regulons$tf)
+TF_diff_tab <- diff_KO_data %>% filter(TF == Gene & P_value<0.1 & Log2FC<0 & up_down==2 & TF %in% TF_list)
+
+length(table(TF_diff_tab$TF))
+
+
+```
+
+

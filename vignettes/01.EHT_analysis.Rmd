@@ -1,0 +1,1086 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1.1 load data
+```{r}
+library(scATFR)
+library(PIDC)
+exp_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/EHT_gene_count.txt",sep="\t",header=T,row.names=1)
+gene_infor <- read.table("D:/HSC_Autophagy/ref_genome/gencode.vM25.gene.infor.rm.version.tsv",sep="\t",header=T,row.names=1)
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/sample2stage.txt",header=T,sep="\t")
+row.names(col_metadata) <- col_metadata$sample
+exp_data_median <- apply(exp_data,2,function(x){tapply(x,as.character(gene_infor[names(x),"gene_name"]),sum)})
+exp_data_median <- exp_data_median[apply(exp_data_median,1,function(x){length(x[x>0])>=10}),]
+saveRDS(exp_data_median, "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/EHT_gene_count.rds")
+
+atfr <- scATFR(exp_data = exp_data_median,col_data = col_metadata)
+atfr <- scater::logNormCounts(atfr)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/GRNs/atfr_init.rds")
+```
+
+#### 1.2 perform GRN infering
+
+```{r}
+atfr <- inferGRNs(x = atfr,method="pidc",use_assay="logcounts", ncores=6)
+saveRDS(GRN(atfr,"pidc"),"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/GRNs/pidc_GRN.rds")
+pidc_nets <- matToNet(weightMat = GRN(atfr,"pidc"),cutoff = 0)
+saveRDS(pidc_nets,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/GRNs/pidc_regulons.rds")
+
+```
+
+#### 1.3 integrate GRNs 
+
+```{r}
+mouse_tfs <- intersect(TF_Symbols$mouse,row.names(atfr))
+blood_nets <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_strict_network.txt.gz",sep="\t",header=T) %>% filter(tf %in% mouse_tfs)
+pidc_nets <- pidc_nets %>% filter(regulator %in% mouse_tfs)
+regulon_nets <- integraNets(grnNets = list(pidc_nets, blood_nets), norm_weight = T,
+                            max_target_num=2000, min_target_num = 100, 
+                            join_type = "full", return_sig = T, maxInter = 5, 
+                            ncores = 6)
+                        
+interged_regulons <- dfToList(regulon_nets)
+length(interged_regulons)
+```
+
+#### 1.3 filtering and calculating active GRNs 
+
+```{r}
+atfr <- filterRegulons(x = atfr, gene_list = interged_regulons, maxSize=500, minSize=5)
+atfr <- regulonActivity(x = atfr, method="viper", use_assay="logcounts")
+active_mat <- assay(altExp(atfr,"viper"))
+write.table(active_mat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/tf_regulon_active_mat.txt",sep="\t",quote=F)
+
+atfr <- regulonActivity(x = atfr, method="aucell", use_assay="logcounts")
+active_mat2 <- assay(altExp(atfr,"aucell"))
+write.table(active_mat2,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/tf_regulon_active_mat_auell.txt",sep="\t",quote=F)
+
+atfr <- regulonActivity(x = atfr, method="ssgsea", use_assay="logcounts")
+active_mat3 <- assay(altExp(atfr,"ssgsea"))
+write.table(active_mat3,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/tf_regulon_active_mat_ssgsea.txt",sep="\t",quote=F)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+
+```
+
+#### 1.4 active mat generate from dorothea
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+tf_gene <- intersect(TF_Symbols$mouse, row.names(atfr))
+library(dorothea)
+regulons <- dorothea_mm %>% filter(tf %in% row.names(atfr))
+
+exprMatr <- as.matrix(assay(atfr,"logcounts"))
+tf_activities <- run_viper(exprMatr, regulons, options =  list(method = "scale", minsize = 4, 
+                                                  eset.filter = FALSE, cores = 1, verbose = TRUE))
+act_sce <- SingleCellExperiment::SingleCellExperiment(list(active_score=tf_activities))
+colData(act_sce) <- colData(atfr)
+colData(act_sce)$stage <- reLevel(vect = colData(act_sce)$stage)
+act_sce <- scater::runPCA(x=act_sce, exprs_values="active_score") 
+plotReducedDim(act_sce, dimred="PCA",colour_by = "stage")
+act_sce <- scater::runTSNE(x = act_sce,exprs_values="active_score")
+plotReducedDim(act_sce, dimred="TSNE",colour_by = "stage")
+#act_sce <- scater::runUMAP(x = act_sce, subset_row=tf_gene,exprs_values="active_score")
+#plotReducedDim(act_sce, dimred="UMAP",colour_by = "stage")
+
+
+```
+
+
+
+
+### 2 expression level analysis
+
+#### 2.1 expression level quality control
+
+```{r}
+exp_data_median <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/EHT_gene_count.rds")
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/sample2stage.txt",header=T,sep="\t")
+row.names(col_metadata) <- col_metadata$sample
+gene_number <- apply(exp_data_median,2,function(x){length(x[x>=1])})
+col_metadata$gene_number <- gene_number[row.names(col_metadata)]
+col_metadata$stage <- factor(col_metadata$stage,levels=unique(col_metadata$stage))
+stage2color <- read.table("D:/HSC_Autophagy/2.HSC_formation/sample_infor/stage2color.txt",sep="\t",header=T,comment.char = "")
+row.names(stage2color) <- stage2color$stage
+
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+plot_frm <- col_metadata
+
+p <- ggplot(plot_frm,mapping = aes(x=stage,y=gene_number, color=stage))+
+  geom_violin(position = "dodge", na.rm = TRUE, scale = "width",width = 0.9)+
+  geom_boxplot(width=0.25,fill=NA, size=0.2,outlier.colour=NA, alpha = 0.8)+
+  geom_jitter(width=0.2,size=0.2,shape=16,color="black", alpha = 1)+
+  scale_color_manual(values = stage2color$figurecolor)+
+  labs(x="",y='number of expressed genes in each single cells')+
+  mytheme
+
+p
+
+ggsave(filename ="EHT_gene_num_violin.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/quality_control/figure",
+       width = 80, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+#### 2.2 dimensionality reduction using expression data and activate score
+
+```{r}
+library(scater)
+library(scran)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+tf_gene <- intersect(TF_Symbols$mouse,row.names(atfr))
+exp_sce <- atfr[tf_gene,]
+exp_sce <- scater::logNormCounts(exp_sce)
+colData(exp_sce) <- colData(atfr)
+colData(exp_sce)$stage <- reLevel(vect = colData(exp_sce)$stage)
+
+log_exp <- as.matrix(logcounts(exp_sce))
+log_exp_sd <- apply(log_exp,1,sd)
+log_exp_sd_sort <- sort(log_exp_sd,decreasing = T)
+log_exp_sd_top <- names(head(log_exp_sd_sort,500))
+
+exp_sce <- scater::runPCA(x=exp_sce,subset_row=log_exp_sd_top,exprs_values = "logcounts") 
+plotReducedDim(exp_sce, dimred="PCA",colour_by = "stage")
+exp_sce <- scater::runTSNE(x = exp_sce,subset_row=log_exp_sd_top,exprs_values = "logcounts")
+p <- plotReducedDim(exp_sce, dimred="TSNE",colour_by = "stage",point_size=0.5,point_alpha=1)
+#exp_sce  <- scater::runUMAP(x = exp_sce, subset_row=tf_gene)
+#plotReducedDim(exp_sce , dimred="UMAP",colour_by = "stage")
+saveRDS(exp_sce,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+
+#--- active score
+act_sce <- SingleCellExperiment::SingleCellExperiment(list(active_score=assay(altExp(atfr,"viper"))))
+colData(act_sce) <- colData(atfr)
+colData(act_sce)$stage <- reLevel(vect = colData(act_sce)$stage)
+act_mat <- as.matrix(assay(act_sce,"active_score"))
+act_mat_sd <- apply(act_mat,1,sd)
+act_mat_sd_sort <- sort(act_mat_sd,decreasing = T)
+act_mat_cv_top <- names(head(act_mat_cv_sort,500))
+
+act_sce <- scater::runPCA(x=act_sce,subset_row=act_mat_cv_top, exprs_values="active_score") 
+plotReducedDim(act_sce, dimred="PCA",colour_by = "stage")
+act_sce <- scater::runTSNE(x = act_sce,subset_row=act_mat_cv_top, exprs_values="active_score")
+q <- plotReducedDim(act_sce, dimred="TSNE",colour_by = "stage",point_size=0.5,point_alpha=1)
+#act_sce <- scater::runUMAP(x = act_sce, subset_row=tf_gene,exprs_values="active_score")
+#plotReducedDim(act_sce, dimred="UMAP",colour_by = "stage")
+saveRDS(act_sce,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+
+p1 <- plotReducedDim(exp_sce, dimred="TSNE",colour_by = "stage",point_size=0.5,point_alpha=1)
+p2 <- plotReducedDim(act_sce, dimred="TSNE",colour_by = "stage",point_size=0.5,point_alpha=1)
+
+p <- p1+p2
+
+ggsave(filename ="tf_and_tf_regulons_tSNE_plot.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/figure",
+       width = 160, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+#---all gene
+colData(atfr)$stage <- reLevel(vect = colData(atfr)$stage)
+log_exp_all <- as.matrix(logcounts(atfr))
+log_exp_all_cv <- apply(log_exp_all,1,sd)
+log_exp_cv_all_sort <- sort(log_exp_all_cv,decreasing = T)
+log_exp_cv_all_top <- names(head(log_exp_cv_all_sort,500))
+atfr_sce <- scater::runPCA(x=atfr, subset_row=log_exp_cv_all_top, exprs_values="logcounts") 
+plotReducedDim(atfr_sce, dimred="PCA",colour_by = "stage")
+atfr_sce <- scater::runTSNE(x = atfr_sce,subset_row=log_exp_cv_all_top, exprs_values="logcounts")
+r <- plotReducedDim(atfr_sce, dimred="TSNE",colour_by = "stage",point_size=0.5,point_alpha=1)
+
+
+
+ggsave(filename ="tSNE_tf_all_regulon_level.pdf" ,plot = p+r+q, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/figure/",
+       width = 230, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+
+
+#### 2.3 TF expression vs regulon active matrix correlation
+
+```{r}
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+assay(act_sce,"logcounts") <- assay(exp_sce,"logcounts")[row.names(assay(act_sce,"active_score")),]
+acticate_mat <- assay(act_sce,"active_score")
+exp_mat <- assay(exp_sce,"logcounts")[row.names(acticate_mat),]
+cor_p <- sapply(row.names(acticate_mat),function(x,acticate_mat, exp_mat){
+  cor(acticate_mat[x,],exp_mat[x,])
+},acticate_mat=acticate_mat, exp_mat=exp_mat)
+names(cor_p) <- row.names(acticate_mat)
+
+others_cor <- sapply(row.names(acticate_mat),function(x,acticate_mat, exp_mat){
+  exp_mat_filter <- exp_mat[setdiff(row.names(exp_mat),x),]
+  apply(exp_mat_filter,1,function(y){cor(acticate_mat[x,],y)})
+  },acticate_mat=acticate_mat, exp_mat=exp_mat)
+others_cor_frm <- data.frame(cor_p=as.vector(others_cor),type=rep("control",length(cor_p)))
+plot_frm <- data.frame(cor_p,type=rep("case",length(cor_p)))
+plot_frm_all <- rbind(others_cor_frm, plot_frm)
+
+library(ggplot2)
+p <- ggplot(plot_frm_all,aes(x=cor_p,fill=type,group=type))+
+  geom_density()+
+  scale_x_continuous(limits = c(-1,1))+
+   mytheme
+p
+ggsave(filename ="tf_and_tf_regulons_active_matrix_similarity.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/figure",
+       width = 75, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+#### 2.4 differential test
+
+##### 2.4.1 cell type specific TF gene and TF regulons at expression and activate level
+
+```{r}
+#---expression level
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+exp_data <- logcounts(atfr)
+TF_exp_mat <- as.matrix(exp_data[intersect(TF_Symbols$mouse,row.names(exp_data)),])
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/sample2stage.txt",header=T,sep="\t")
+row.names(col_metadata) <- col_metadata$sample
+
+cts_tfs <- findAllCTSRegulons(x = TF_exp_mat, col_data= col_metadata, clust_name="stage", fdr = 1, css=0, nperm = 10000, ncores=6)
+saveRDS(cts_tfs,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01)
+saveRDS(cts_tfs_diff,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_diff_res.rds")
+
+#---regulons level
+
+cts_tf_regulons <- findAllCTSRegulons(x = atfr, clust_name="stage", use_assay="aucell", fdr=1L, css=0,  expression_per=0,  nperm=10000, ncores=6)
+saveRDS(cts_tf_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01)
+saveRDS(cts_tf_regulons_diff,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res_aucell.rds")
+
+```
+
+##### 2.4.2 AEC vs HEC TF gene and TF regulons at expression and activate level
+
+```{r}
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+#assay(act_sce,"logcounts") <- assay(exp_sce,"logcounts")[row.names(assay(act_sce,"active_score")),]
+col_data <- colData(exp_sce)
+library(scran)
+exp_sce_AEC_HEC <- findMarkers(x = exp_sce,groups=col_data$stage, restrict=c("AEC","HEC"))$HEC
+exp_sce_AEC_HEC <- as.data.frame(exp_sce_AEC_HEC)
+exp_sce_AEC_HEC_diff <- exp_sce_AEC_HEC %>% dplyr::filter(FDR<0.05)
+exp_sce_AEC_HEC_not_diff <- exp_sce_AEC_HEC %>% dplyr::filter(FDR>0.2)
+exp_sce_AEC_HEC_up <- exp_sce_AEC_HEC_diff %>% filter(logFC.AEC>=1)
+exp_sce_AEC_HEC_down <- exp_sce_AEC_HEC_diff %>% filter(logFC.AEC<= -1)
+
+assay(act_sce) <- t(apply(assay(act_sce),1,function(x){10*(x-min(x))/(max(x)-min(x))}))
+
+act_sce_AEC_HEC <- findMarkers(x = act_sce,groups=col_data$stage, restrict=c("AEC","HEC"), assay.type = "active_score")$HEC
+act_sce_AEC_HEC <- as.data.frame(act_sce_AEC_HEC)
+act_sce_AEC_HEC_not_diff <- act_sce_AEC_HEC %>% dplyr::filter(FDR>0.2)
+act_sce_AEC_HEC_diff <- act_sce_AEC_HEC %>% dplyr::filter(FDR<0.05)
+act_sce_AEC_HEC_up <- act_sce_AEC_HEC_diff %>% filter(logFC.AEC>=1)
+act_sce_AEC_HEC_down <- act_sce_AEC_HEC_diff %>% filter(logFC.AEC<= -1)
+
+AEC_HEC_act_up_only <- intersect(row.names(act_sce_AEC_HEC_up), union(row.names(exp_sce_AEC_HEC_not_diff),row.names(exp_sce_AEC_HEC_down)))
+
+AEC_HEC_frm <- data.frame(act_sce_AEC_HEC[AEC_HEC_act_up_only,],
+                          exp_sce_AEC_HEC[AEC_HEC_act_up_only,])
+AEC_HEC_frm_order <- AEC_HEC_frm[order(AEC_HEC_frm$FDR,AEC_HEC_frm$FDR,decreasing = c(F,T),method = "radix"),]
+write.table(AEC_HEC_frm_order,"")
+early_o <- intersect(earlyAEC_HEC_act_up_only,i)
+late_o <- intersect(lateAEC_HEC_act_up_only,i)
+
+
+i <- AEC_HEC_act_up_only
+i <- c("Nfyc","Safb2","Fli1","Ash1l","Zkscan3","Kdm5b")
+ncols <- round(sqrt(length(i)))+1
+p1 <- plotExpression(object = exp_sce,features = i,x = "stage", colour_by = "stage", exprs_values = "logcounts", ncol = ncols, point_size=0.1)
+p2 <- plotExpression(object = act_sce,features = i,x = "stage", colour_by = "stage",exprs_values = "active_score", ncol = ncols, point_size=0.1)
+p1+p2
+
+ggsave(filename ="tf_and_tf_regulons_active_matrix_similarity.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/figure",
+       width = 1000, height =500, dpi = 600, limitsize = FALSE, units ="mm")
+saveRDS(list(exp_sce_AEC_HEC, act_sce_AEC_HEC),"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/AEC_HEC/exp_act_diff_test.rds")
+
+EHT_diff_res <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/AEC_HEC/exp_act_diff_test.rds")
+
+
+```
+
+#### 2.4.3 cts tf vs regulon distribution
+
+```{r}
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+col_data <- as.data.frame(colData(exp_sce))
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+cts_tfs_diff_list <- split(cts_tfs_diff,cts_tfs_diff$stage)
+
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.3)
+cts_tf_regulons_diff_list <- split(cts_tf_regulons_diff,cts_tf_regulons_diff$stage)
+
+cts_tfs_regulon_comparison <- purrr::map2(.x = cts_tfs_diff_list, .y = cts_tf_regulons_diff_list, .f = function(x,y){
+  overlap_gene <- intersect(x$regulon,y$regulon)
+  tf_only <- setdiff(x$regulon,y$regulon)
+  regulon_only <- setdiff(y$regulon,x$regulon)
+  cts_gene_type <- c(rep("both",length(overlap_gene)), 
+                   rep("tf_only",length(tf_only)),
+                   rep("regulon_only",length(regulon_only)))
+  names(cts_gene_type) <-c(overlap_gene, tf_only, regulon_only)
+  x$type <- cts_gene_type[x$regulon]
+  y$type <- cts_gene_type[y$regulon]
+  list(TF=x,regulon=y)
+})
+
+cts_tfs_list <- lapply(cts_tfs_regulon_comparison,function(x){x[['TF']]})
+cts_tfs_df <- do.call(rbind,cts_tfs_list)
+write.table(cts_tfs_df,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/cts_tfs_level.tsv",sep="\t",quote=F,row.names=F)
+
+
+cts_tf_regulon_list <- lapply(cts_tfs_regulon_comparison,function(x){x[['regulon']]})
+cts_tf_regulon_df <- do.call(rbind, cts_tf_regulon_list)
+fwrite(cts_tf_regulon_df,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/cts_tf_regulon_level.tsv",sep="\t",quote=F,row.names=F)
+#---exp level
+exp_mat <- as.matrix(logcounts(exp_sce))
+cts_tfs_exp <- exp_mat[unique(cts_tfs_diff$regulon),]
+cts_tfs_exp_mean <- t(apply(cts_tfs_exp,1,function(x){tapply(x,col_data[names(x),]$stage, mean)})) %>% as.data.frame()
+cts_tfs_exp_mean$gene_name <- row.names(cts_tfs_exp_mean)
+
+cts_tfs_df_plot <- cts_tfs_df[,c("stage","regulon","type")]
+plot_tfs <- left_join(cts_tfs_df_plot, cts_tfs_exp_mean, by=c("regulon"="gene_name"))
+
+stages <- c("AEC","HEC", "T1_pre_HSC", "T2_pre_HSC", "FL_HSC", "Adult_HSC")
+plot_tfs$stage <- factor(plot_tfs$stage,levels=stages)
+rv1 <- RadvizEnrichPlot(plot_tfs, anchors=stages, color_by="stage",
+                       optim_anchor=F,return_rv=F,text_size = 5, point_size=1,alpha=0.6)+
+  scale_color_manual(values = c('#729ece','#ff9e4a','#67bf5c','#ed665d','#ad8bc9','#a8786e'))
+rv1
+
+#---act level
+act_mat <- as.matrix(assay(act_sce,"active_score"))
+cts_act_mat <- act_mat[unique(cts_tf_regulons_diff$regulon),]
+cts_act_mat <- t(apply(cts_act_mat,1,function(x){(x-min(x))/(max(x)-min(x))}))
+cts_act_median <- t(apply(cts_act_mat,1,function(x){tapply(x,col_data[names(x),]$stage,mean)})) %>% as.data.frame()
+cts_act_median$gene_name <- row.names(cts_act_median)
+
+cts_tf_regulon_df_plot <- cts_tf_regulon_df[,c("stage","regulon","type")]
+plot_act <- left_join(cts_tf_regulon_df_plot, cts_act_median, by=c("regulon"="gene_name"))
+
+stages <- c("AEC","HEC", "T1_pre_HSC", "T2_pre_HSC", "FL_HSC", "Adult_HSC")
+plot_act$stage <- factor(plot_act$stage,levels=stages)
+rv2 <- RadvizEnrichPlot(plot_act, anchors=stages, color_by="stage",
+                       optim_anchor=F, return_rv=F, text_size = 5, point_size=1,alpha=0.6)+
+  scale_color_manual(values = c('#729ece','#ff9e4a','#67bf5c','#ed665d','#ad8bc9','#a8786e'))
+rv2
+ggsave(filename ="CTS_tf_and_regulon_Radviz.pdf" ,plot = rv1+rv2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/figure/",
+       width = 200, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+rv1+rv2
+
+tfs_regulon_overlap_gene <- cts_tfs_df %>% filter(type %in% "both")
+
+
+
+```
+
+#### 2.5 test using KO data
+
+```{r}
+Prdm16_ko <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/Prdm16.txt",sep="\t",header=T)
+library(tidyr)
+Prdm16_ko <- Prdm16_ko %>% separate_rows(Gene.symbol,sep = '///')
+Prdm16_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Prdm16")
+
+overlap_genes <- intersect(unlist(Prdm16_regulon_df$targets)[1:50],Prdm16_ko$Gene.symbol)
+
+diff <- Prdm16_ko %>% filter(SYMBOL %in% overlap_genes)
+
+Prdm16_ko_logFC <- tapply(Prdm16_ko$log2FC,Prdm16_ko$SYMBOL,mean)
+Prdm16_ko_logFC <- Prdm16_ko_logFC[-1]
+
+library(fgsea)
+enrich <- fgsea(Prdm16_regulon_df$targets, Prdm16_ko_logFC)
+p <- plotEnrichment(Prdm16_regulon_df$targets[["Prdm16"]],Prdm16_ko_logFC)
+
+ggsave(filename ="Rela_KO_diff.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure",
+       width = 150, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+#### 2.5.2 Atf4
+
+```{r}
+Atf4_ko <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE66380_RNAseq_gene_reads_count.txt.gz",sep="\t",header=T)
+Atf4_ko$logFC <- log2((Atf4_ko$KO+1)/(Atf4_ko$WT+1))
+
+Atf4_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Atf4")
+
+overlap_genes <- intersect(unlist(Atf4_regulon_df$targets$Atf4),Atf4_ko$Gene)
+
+Atf4_ko_logFC <- tapply(Atf4_ko$logFC,Atf4_ko$Gene,mean)
+
+Atf4_enrich <- fgsea(Atf4_regulon_df$targets[1], Atf4_ko_logFC)
+
+
+p <- plotEnrichment(Atf4_regulon_df$targets[[1]],Atf4_ko_logFC)
+
+
+```
+
+### 2.5.3 Sp1
+
+```{r}
+Sp1_ko <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE52497.Sp1.E14_pro.table.tsv",sep="\t",header=T)
+Sp1_ko <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE52497.Sp1.HE1.table.tsv",sep="\t",header=T)
+
+gene_infor <- fread("D:/HSC_Autophagy/important_genes/orthlogo_gene/NCBI/gene_info/gene_info",sep="\t",header=T)
+gene_2_ensembl <- fread("D:/HSC_Autophagy/important_genes/orthlogo_gene/NCBI/gene2ensembl/gene2ensembl",sep="\t",header=T)
+gene_2_ensembl <- gene_2_ensembl %>% filter(`#tax_id` == 10090)
+gene_2_ensembl$RNA_nucleotide_accession.version <- sapply(str_split(gene_2_ensembl$RNA_nucleotide_accession.version,pattern = "\\."),function(x){x[1]})
+
+mmu_gene_infor <- gene_infor %>% filter(`#tax_id` == 10090)
+mmu_gene_infor <- full_join(mmu_gene_infor,gene_2_ensembl[,c("GeneID","RNA_nucleotide_accession.version")], by=c("GeneID"="GeneID"))
+mmu_gene_infor<- mmu_gene_infor %>% select(Symbol,RNA_nucleotide_accession.version) %>% unique()
+
+Sp1_ko <- left_join(x = Sp1_ko,y = mmu_gene_infor, by=c("GB_ACC"="RNA_nucleotide_accession.version"))
+
+Sp1_ko_logFC <- tapply(Sp1_ko$logFC,Sp1_ko$Symbol,mean)
+
+Sp1_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Sp1")
+
+Sp1_enrich <- fgsea(Sp1_regulon_df$targets[1], -Sp1_ko_logFC)
+
+p <- plotEnrichment(Sp1_regulon_df$targets[[1]], -Sp1_ko_logFC)
+
+ggsave(filename ="Sp1_KO_diff.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure",
+       width = 150, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+Sp1_ko %>% filter(Symbol=="Sp1")
+
+```
+
+#### 2.5.4 Foxm1
+
+```{r}
+Foxm1_ko <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE62360.Foxm1.table.tsv",sep="\t",header=T)
+cts_tf_regulon_df <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulon_df <- cts_tf_regulon_df %>% filter(padj<0.01 & CSS>0.3 & exp_percent>0.3)
+
+library(tidyr)
+Foxm1_ko <- Foxm1_ko %>% separate_rows(Gene.symbol,sep = '///')
+Foxm1_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Foxm1")
+
+overlap_genes <- intersect(unlist(Foxm1_regulon_df$targets),Foxm1_ko$Gene.symbol)
+
+diff <- Foxm1_ko %>% filter(Gene.symbol %in% overlap_genes)
+
+Foxm1_ko_logFC <- tapply(Foxm1_ko$logFC,Foxm1_ko$Gene.symbol,mean)
+Foxm1_ko_logFC <- Foxm1_ko_logFC[-1]
+
+Foxm1_enrich <- fgsea(Foxm1_regulon_df$targets[1], Foxm1_ko_logFC)
+
+p <- plotEnrichment(Foxm1_regulon_df$targets[[1]], Foxm1_ko_logFC)
+
+```
+#### 2.5.5 Spi1
+
+```{r}
+dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE65344_Spi1_RAW"
+files <- list.files(dir)
+fpkm_all <- lapply(files,function(x,dir=dir){
+  in_FPKM <- read.table(file.path(dir,x),sep="\t",header=T)
+  in_FPKM[,c('gene_short_name','q2_FPKM')]
+},dir=dir)
+names(fpkm_all) <- files
+fpkm_all_tab1 <- fpkm_all[[1]]
+fpkm_all_tab2 <- fpkm_all[[2]]
+fpkm_all_tab3 <- fpkm_all[[3]]
+fpkm_all_tab4 <- fpkm_all[[4]]
+fpkm_all_tab5 <- fpkm_all[[5]]
+fpkm_all_tab6 <- fpkm_all[[6]]
+
+fpkm_all_tab1_2 <- left_join(fpkm_all_tab4,fpkm_all_tab6,by=c("gene_short_name"="gene_short_name"))
+fpkm_all_tab1_2$logFC <- (fpkm_all_tab1_2$q2_FPKM.y)/(fpkm_all_tab1_2$q2_FPKM.x+1)
+#fpkm_all_tab1_2$logFC <- log2(fpkm_all_tab1_2$logFC)
+fpkm_all_tab1_logFC <- tapply(fpkm_all_tab1_2$logFC,fpkm_all_tab1_2$gene_short_name,mean)
+
+
+Spi1_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Spi1")
+
+Spi1_enrich <- fgsea(Spi1_regulon_df$targets[1], fpkm_all_tab1_logFC)
+
+library(dplyr)
+fpkm_all_tab <- purrr::reduce(.x = fpkm_all, .f = dplyr::left_join, by=c("gene_short_name"="gene_short_name"))
+
+
+```
+
+
+
+
+#### 2.5 cell type specific TF vs regulons CSS comparison using histogram
+
+```{r}
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, hjust=0.5,vjust=0.5,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+p <- ggplot()+
+  geom_histogram(data = cts_tfs,mapping = aes(x=CSS,y=..count..),bins = 50,fill="#729ece",color=NA,alpha=0.7)+
+  geom_histogram(data = cts_tf_regulons,mapping = aes(x=CSS,y=..count..),bins = 50,fill="#ed665d",color=NA,alpha=0.7)+
+  scale_x_continuous(breaks=seq(0.0,0.6,0.2))+
+  mytheme
+p
+
+ggsave(filename ="tf_and_tf_regulons_CSS_histgogram.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/figure",
+       width = 60, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+
+### 3 cell type specific TF vs regulons comparison
+
+#### 3.1 cell type specific TF vs regulons overlaps comparison
+
+```{r}
+library(data.table)
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+fwrite(cts_tfs,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.tsv",sep="\t")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+fwrite(cts_tfs_diff,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_diff_res.tsv",sep="\t")
+cts_tfs_diff_stat <- table(cts_tfs_diff$regulon,cts_tfs_diff$stage)
+attributes(cts_tfs_diff_stat)$class <- "matrix"
+data_set <- as.data.frame(cts_tfs_diff_stat)
+data_set <- data_set[,unique(colData(atfr)$stage)]
+
+library(UpSetR)
+p1 <- upset(data_set, nsets = 6, nintersects = 40, mb.ratio = c(0.5, 0.5),
+      order.by = c("degree","freq"), decreasing = c(F,TRUE),point.size=5,
+      line.size=2.5)
+cts_tfs_diff_type <- tapply(cts_tfs_diff$stage,cts_tfs_diff$regulon,paste,collapse=";")
+cts_tfs_diff_type_list <- split(names(cts_tfs_diff_type),cts_tfs_diff_type)
+#---regulon level
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+fwrite(cts_tf_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res_aucell.tsv",sep="\t")
+
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.2)
+fwrite(cts_tf_regulons_diff,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res.tsv",sep="\t")
+cts_tf_regulons_diff_stat <- table(cts_tf_regulons_diff$regulon,cts_tf_regulons_diff$stage)
+attributes(cts_tf_regulons_diff_stat)$class <- "matrix"
+data_set <- as.data.frame(cts_tf_regulons_diff_stat)
+data_set <- data_set[,unique(colData(atfr)$stage)]
+
+p2 <- upset(data_set, nsets = 6, nintersects = 40, mb.ratio = c(0.5, 0.5),
+      order.by = c("degree","freq"), decreasing = c(F,TRUE),point.size=5,
+      line.size=2.5)
+cts_tf_regulons_diff_type <- tapply(cts_tf_regulons_diff$stage,cts_tf_regulons_diff$regulon,paste,collapse=";")
+cts_tf_regulons_diff_type_list <- split(names(cts_tf_regulons_diff_type),cts_tf_regulons_diff_type)
+
+overlap_stages <- intersect(names(cts_tfs_diff_type_list),names(cts_tf_regulons_diff_type_list))
+overlap_stages_overlap_targets <- purrr::map2(.x = cts_tfs_diff_type_list[overlap_stages],
+                                  .y = cts_tf_regulons_diff_type_list[overlap_stages],
+                                  .f = intersect)
+sapply(overlap_stages_overlap_targets,length)
+
+overlap_stages_regulon_only_targets <- purrr::map2(.x = cts_tfs_diff_type_list[overlap_stages],
+                                  .y = cts_tf_regulons_diff_type_list[overlap_stages],
+                                  .f = function(x,y){setdiff(y,x)})
+
+#---candidates plot
+p1 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Sox17", by_exprs_values = "logcounts", point_size=0.2,point_alpha=1)
+p2 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Sox17", by_exprs_values = "active_score", point_size=0.2,point_alpha=1)
+p1+p2
+
+ggsave(filename ="Sox17_tSNE.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_candidates",
+       width = 110, height =40, dpi = 600, limitsize = FALSE, units ="mm")
+#---Irf7
+p1 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Irf7", by_exprs_values = "logcounts", point_size=0.2,point_alpha=1)
+p2 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Irf7", by_exprs_values = "active_score", point_size=0.2,point_alpha=1)
+p1+p2
+
+ggsave(filename ="Irf7_tSNE.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_candidates",
+       width = 110, height =40, dpi = 600, limitsize = FALSE, units ="mm")
+
+#---Spi1
+p1 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Spi1", by_exprs_values = "logcounts", point_size=0.2,point_alpha=1)
+p2 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Spi1", by_exprs_values = "active_score", point_size=0.2,point_alpha=1)
+p1+p2
+
+ggsave(filename ="Spi1_tSNE.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_candidates",
+       width = 115, height =40, dpi = 600, limitsize = FALSE, units ="mm")
+
+#---Hlf
+p1 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Hlf", by_exprs_values = "logcounts", point_size=0.2,point_alpha=1)
+p2 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = "Hlf", by_exprs_values = "active_score", point_size=0.2,point_alpha=1)
+p1+p2
+
+ggsave(filename ="Hlf_tSNE.pdf" ,plot = p1+p2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_candidates",
+       width = 110, height =40, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+
+```
+
+
+#### 3.2 cell type specific TF regulons but not cts at expression level
+
+```{r}
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.2)
+
+get_diff_candidates <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.3)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.5)
+  overlap_tfs <- intersect(diff_tf_regulon$regulon, not_diff_tf$regulon)
+  diff_tf_regulon_tab <- diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- not_diff_tf %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_regulon_tab,all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+cts_regulons_not_tfs_list <- lapply(stages,get_diff_candidates)
+cts_regulons_not_tfs_list <- do.call(rbind,cts_regulons_not_tfs_list)
+fwrite(cts_regulons_not_tfs_list,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_regulon_at_activity_level_but_not_expression_level_v2.tsv",sep="\t")
+
+get_diff_candidates2 <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.3)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.5)
+  overlap_tfs <- intersect(diff_tf_regulon$regulon, diff_tf$regulon)
+  diff_tf_regulon_tab <- diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- diff_tf %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_regulon_tab,all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+cts_regulons_and_tfs_list <- lapply(stages,get_diff_candidates2)
+cts_regulons_and_tfs_list <- do.call(rbind,cts_regulons_and_tfs_list)
+fwrite(cts_regulons_and_tfs_list,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_regulon_at_activity_level_and_expression_level_v2.tsv",sep="\t")
+
+
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+assay(act_sce,i = "logcounts") <- assay(exp_sce,"logcounts")[row.names(act_sce),]
+
+i <- "Hoxa1"
+i <- "Klf3"
+i <- "Hes1"
+i <- "Gabpa"
+i <- "Kmt2a"
+i <- "Srebf2"
+i <- "Srebf1"
+i <- "Eea1"
+i <- "Foxo1"
+i <- "Zbtb7a"
+i <- "Rela"
+p1 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = i, by_exprs_values = "active_score", point_size=1,point_alpha=1)
+p2 <- plotReducedDim(object = act_sce,dimred = "TSNE", colour_by = i, by_exprs_values = "logcounts", point_size=1,point_alpha=1)
+p1+p2
+
+i <- c("Zbtb7a","Ncoa2","Elf2","Elk4","Gtf2b")
+i <- cts_regulons_not_tfs_list %>% filter(stage.x =="HEC") %>% pull(regulon)
+
+
+i <- "Sp1"
+v1 <- plotExpression(object = act_sce,x = "stage",exprs_values = "active_score",colour_by="stage",features = i, point_size=0.5, point_alpha=1,ncol = round(sqrt(length(i))),scales="free_y")
+v2 <- plotExpression(object = act_sce,x = "stage",exprs_values = "logcounts",colour_by="stage",features = i, point_size=0.5, point_alpha=1,ncol = round(sqrt(length(i))),scales="free_y")
+v2+v1
+ggsave(filename ="Sp1_expression_violin.pdf" ,plot = v2+v1, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure/",
+       width = 200, height =75, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+i <- "Nfxl1"
+i <- "Ncoa2"
+i <- "Runx1"
+i <- cts_regulons_not_tfs_list %>% filter(stage.x =="FL_HSC") %>% pull(regulon)
+
+
+v1 <- plotExpression(object = act_sce,x = "stage",exprs_values = "active_score",colour_by="stage",features = i, point_size=0.1, point_alpha=1,ncol = round(sqrt(length(i))),scales="free_y")
+ggsave(filename ="FL_diff_regulon_not_gene_activate_score.pdf" ,plot = v1, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/candidates",
+       width = 200, height =150, dpi = 600, limitsize = FALSE, units ="mm")
+v2 <- plotExpression(object = act_sce,x = "stage",exprs_values = "logcounts",colour_by="stage",features = i,point_size=0.1, point_alpha=1,ncol = round(sqrt(length(i))),scales="free_y")
+ggsave(filename ="FL_diff_regulon_not_gene_expression.pdf" ,plot = v2, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/candidates",
+       width = 200, height =150, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+
+#### 3.3 cell type specific TF regulons but not cts at expression level comparison
+
+```{r}
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.3)
+
+#---expression and regulon level
+get_overlap <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  overlap_tfs <- intersect(diff_tf$regulon, diff_tf_regulon$regulon)
+  diff_tf_tab <- diff_tf %>% filter(regulon %in% overlap_tfs)
+  diff_tf_regulon_tab <- diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_tab,diff_tf_regulon_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+cts_tf_regulons_list <- lapply(stages, get_overlap)
+names(cts_tf_regulons_list) <- stages
+cts_tf_regulons_tbl <- do.call(rbind,cts_tf_regulons_list)
+length(table(cts_tf_regulons_tbl$regulon))
+
+#---regulon level only
+get_diff_regulons <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.5)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.5)
+  overlap_tfs <- intersect(diff_tf_regulon$regulon, not_diff_tf$regulon)
+  diff_tf_regulon_tab <- diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- not_diff_tf %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_regulon_tab,all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+cts_regulons_not_tfs_list <- lapply(stages,get_diff_regulons)
+names(cts_regulons_not_tfs_list) <- stages
+cts_regulons_not_tfs_tbl <- do.call(rbind,cts_regulons_not_tfs_list)
+length(table(cts_regulons_not_tfs_tbl$regulon))
+
+#---expression level only
+get_diff_tfs <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.5)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.5)
+  overlap_tfs <- intersect(diff_tf$regulon, not_diff_tf_regulon$regulon)
+  diff_tf_tab <- diff_tf %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- not_diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_tab, all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+cts_tfs_not_regulons_list <- lapply(stages,get_diff_tfs)
+names(cts_tfs_not_regulons_list) <- stages
+cts_tfs_not_regulons_tbl <- do.call(rbind,cts_tfs_not_regulons_list)
+length(table(cts_tfs_not_regulons_tbl$regulon))
+
+#---sig regulon each stage 
+cts_tf_regulons_num <- tapply(cts_tf_regulons_diff$regulon,cts_tf_regulons_diff$stage,length)
+cts_tfs_num <- tapply(cts_tfs_diff$regulon,cts_tfs_diff$stage,length)
+cts_tfs_regulons_overlap_num <- sapply(cts_tf_regulons_list,nrow)
+cts_tfs_regulons_only_num <- sapply(cts_regulons_not_tfs_list,nrow)
+cts_tfs_only_num <- sapply(cts_tfs_not_regulons_list,nrow)
+
+regulons_frm <- data.frame(stage = stages,number = cts_tf_regulons_num[stages],type="regulons")
+tfs_frm <- data.frame(stage = stages,number = cts_tfs_num[stages],type="TFs")
+plot_frm <- rbind(regulons_frm,tfs_frm)
+plot_frm$stage <- factor(plot_frm$stage,levels=stages)
+plot_frm$type <- factor(plot_frm$type,levels=c("TFs","regulons"))
+
+library(ggplot2)
+p <- ggplot(plot_frm,aes(x=stage,y=number,fill=type))+
+  geom_bar(stat = "identity",position = "dodge")
+p
+
+pie(cts_tfs_regulons_overlap_num,clockwise = T)
+pie(cts_tfs_regulons_only_num,clockwise = T)
+pie(cts_tfs_only_num,clockwise = T)
+
+```
+
+#### 3.4 CTS regulons pathways
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+all_regulons <- as.list(Regulon(atfr))
+score_cst_regulons <- all_regulons
+
+reactome_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/inst/extdata/Reactome_pathway.rds")
+mouse_reactome <- reactome_pathway$`Mus musculus`
+
+score_cst_regulons_reactome <- calcuModuleSimilar(tfr_list = score_cst_regulons, pathway_list = mouse_reactome, adjust = "BH" ,ncores=6)
+saveRDS(score_cst_regulons_reactome,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/pathways/all_regulons_reactome_pathway.rds")
+score_cst_regulons_reactome_sig <- score_cst_regulons_reactome %>% filter(padj<0.01)
+#score_cst_regulons_reactome_sig %>% filter(regulon %in% "Spi1")
+
+#---both level
+cts_tf_regulons_tbl_reactome <- inner_join(cts_tf_regulons_tbl, score_cst_regulons_reactome,by=c("regulon"="regulon"))
+cts_tf_regulons_tbl_reactome_diff <- cts_tf_regulons_tbl_reactome %>% filter(firstInGroup==1)
+
+ststs <- table(cts_tf_regulons_tbl_reactome$pathway, cts_tf_regulons_tbl_reactome$stage.x)
+attributes(ststs)$class <-"matrix"
+ststs <- ststs[rowSums(ststs)>=2,]
+
+library(pheatmap)
+p <- pheatmap(ststs[,stages],show_rownames = F,scale="row",cluster_cols = F)
+
+
+#---regulon level
+cts_regulons_not_tf_tbl_reactome <- inner_join(cts_regulons_not_tfs_tbl, score_cst_regulons_reactome_sig, by=c("regulon"="regulon"))
+ststs <- table(cts_regulons_not_tf_tbl_reactome$pathway, cts_regulons_not_tf_tbl_reactome$stage.x)
+attributes(ststs)$class <-"matrix"
+ststs <- ststs[rowSums(ststs)>=2,]
+anno_row <- as.data.frame(rowSums(ststs))
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+p <- pheatmap(ststs[,stages], show_rownames = T, scale="row", cluster_cols = F, fontsize = 5, annotation_row = anno_row, color = pal, cutree_rows = 4)
+
+cts_regulons_not_tf_tbl_reactome %>% filter(pathway %in% 'Transcriptional regulation by RUNX1')
+
+cts_regulons_not_tf_tbl_reactome %>% filter(pathway %in% 'RUNX1 regulates transcription of genes involved in differentiation of HSCs')
+
+cts_regulons_not_tf_tbl_reactome %>% filter(pathway %in% c('Cell Cycle','Cell Cycle, Mitotic'))
+
+cts_regulons_not_tf_tbl_reactome %>% filter(pathway %in% c('MAPK family signaling cascades'))
+
+cts_regulons_not_tf_tbl_reactome %>% filter(pathway %in% c('Programmed Cell Death'))
+
+distinc_reactome <- setdiff(cts_tf_regulons_tbl_reactome$pathway,cts_regulons_not_tf_tbl_reactome$pathway)
+
+```
+
+
+
+
+
+```{r}
+out_list <- list(both_level = cts_tf_regulons_tbl, 
+                 regulon_only = cts_regulons_not_tfs_tbl,
+                 tf_only = cts_tfs_not_regulons_tbl)
+saveRDS(out_list,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/CST_TFs_at_three_types.rds")
+
+cts_tfs_order <- cts_tfs[order(cts_tfs$stage,cts_tfs$regulon),]
+cts_tfs_order$CSS <- (cts_tfs_order$CSS-min(cts_tfs_order$CSS))/(max(cts_tfs_order$CSS)-min(cts_tfs_order$CSS))
+cts_tf_regulons_order <- cts_tf_regulons[order(cts_tf_regulons$stage,cts_tf_regulons$regulon),]
+cts_tf_regulons_order$CSS <- (cts_tf_regulons_order$CSS-min(cts_tf_regulons_order$CSS))/(max(cts_tf_regulons_order$CSS)-min(cts_tf_regulons_order$CSS))
+
+cts_tfs_ratio <- (1+cts_tf_regulons_order$CSS)/(cts_tfs_order$CSS+1)
+cts_tfs_ratio_tab <- cts_tf_regulons_order[,1:2]
+cts_tfs_ratio_tab$ratio <- cts_tfs_ratio
+cts_tfs_ratio_tab_dcat <- dcast(cts_tfs_ratio_tab,formula = regulon ~stage)
+write.table(cts_tfs_ratio_tab_dcat,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/CSS_ratio_between_regulon_and_expression.tsv",sep="\t",quote=F,row.names=F)
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+cts_tfs_ratio_tab_dcat <- cts_tfs_ratio_tab_dcat[,c("regulon",stages)]
+row.names(cts_tfs_ratio_tab_dcat) <- cts_tfs_ratio_tab_dcat$regulon
+cts_tf_regulons %>% filter(regulon %in% "2700081O15Rik",)
+
+get_diff_regulons <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.5)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.5)
+  overlap_tfs <- intersect(diff_tf_regulon$regulon, not_diff_tf$regulon)
+  diff_tf_regulon_tab <- diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- not_diff_tf %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_regulon_tab,all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+
+get_diff_tfs <- function(stages,tf=cts_tfs, regulon=cts_tf_regulons){
+  diff_tf <- tf %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3)
+  not_diff_tf <- tf %>% filter(stage %in% stages & padj > 0.5)
+  diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj < 0.01 & CSS >0.3 & exp_percent >= 0.3)
+  not_diff_tf_regulon <- regulon %>% filter(stage %in% stages & padj > 0.2)
+  overlap_tfs <- intersect(diff_tf$regulon, not_diff_tf_regulon$regulon)
+  diff_tf_tab <- diff_tf %>% filter(regulon %in% overlap_tfs)
+  all_tf_exp_tab <- not_diff_tf_regulon %>% filter(regulon %in% overlap_tfs)
+  out_tbl <- inner_join(diff_tf_tab, all_tf_exp_tab,by=c("regulon"="regulon"))
+  out_tbl
+}
+
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+cts_regulons_not_tfs_list <- lapply(stages,get_diff_candidates)
+cts_regulons_not_tfs_list <- do.call(rbind,cts_regulons_not_tfs_list)
+
+
+cts_tfs_not_regulons_list <- lapply(stages,get_diff_tfs)
+cts_tfs_not_regulons_list <- do.call(rbind,cts_tfs_not_regulons_list)
+
+cts_tfs_ratio_tab_dcat["Hlf",]
+cts_tfs %>% filter(regulon %in% "Hlf")
+
+cts_regulons_not_tfs_list$ratio <- cts_regulons_not_tfs_list$CSS.x/cts_regulons_not_tfs_list$CSS.y
+
+
+
+cts_regulons_type <- tapply(cts_regulons_not_tfs_list$stage.x,cts_regulons_not_tfs_list$regulon,function(x){paste(x,collapse = ";")})
+type_all <- names(table(cts_regulons_type))
+new_type <- c("Adult_HSC","AEC","Adult_HSC","HEC","FL_HSC","Adult_HSC","HEC","T1_pre_HSC","T1_pre_HSC","T2_pre_HSC", "FL_HSC")
+names(new_type) <- type_all
+cts_regulons_type_new <- new_type[cts_regulons_type]
+names(cts_regulons_type_new) <- names(cts_regulons_type)
+
+
+
+#---get mean score
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+act_cst_score <- assay(altExp(atfr,"viper"))
+col_data <- colData(atfr)
+sig_act_cst_score <- act_cst_score[unique(cts_regulons_not_tfs_list$regulon),]
+sig_act_cst_score <- t(apply(sig_act_cst_score,1,function(x){(x-min(x))/(max(x)-min(x))}))
+sig_act_cst_score_stage <- t(apply(sig_act_cst_score,1,function(x){
+  tapply(x,col_data[names(x),"stage"],median)
+}))
+
+act_cst_logcounts <- assay(atfr,"logcounts")[row.names(act_cst_score),]
+
+
+
+sig_act_cst_score_stage["Foxc1",]
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+sig_act_cst_score_stage <- cts_tfs_ratio_tab_dcat[unique(cts_regulons_not_tfs_list$regulon),stages]
+sig_act_cst_score_stage <- as.data.frame(sig_act_cst_score_stage)
+sig_act_cst_score_stage$type <- factor(cts_regulons_type_new[row.names(sig_act_cst_score_stage)],levels=stages)
+sig_act_cst_score_stage$mean <- apply(sig_act_cst_score_stage[,stages],1,mean)
+
+plot_frm <- sig_act_cst_score_stage
+rv <- getRadviz(input_frm = plot_frm,anchors =stages,optim_anchor=F,text_size=6)
+p <- do_RadvizEnrichPlot(rv,color_by="HEC",alpha = 0.8,label_size = 1)+
+  scale_color_manual(values=c("#039be5","#ffc107","#f44336","#4caf50","#9c27b0","#3f51b5"))
+p
+ggsave(filename ="cts_regulon_not_gene_expression.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/figure",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+
+#### 3.4 cell type specific TF regulons at T1 & T2
+
+
+```{r}
+cts_tfs <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tfs_all_res.rds")
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+
+cts_tf_regulons <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_all_res.rds")
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.3)
+
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+col_data <- colData(atfr)
+regulon_activaty <- assay(altExp(atfr,"viper"))
+regulon_activaty_cv <- t(apply(regulon_activaty,1,function(x){
+    cv <- tapply(x,col_data[names(x),"stage"],function(y){
+    y <- (y-min(y))/(max(y)-min(y))
+  (sd(y)+0.001)/(mean(y)+0.001)
+  })
+  ecv <- ecdf(cv)(cv)
+  names(ecv) <- names(cv)
+  ecv 
+  }))
+logcounts_exp <- assay(atfr,"logcounts")[row.names(regulon_activaty),]
+logcounts_exp_cv <- t(apply(logcounts_exp,1,function(x){
+  cv <- tapply(x,col_data[names(x),"stage"],function(y){
+    y <- (y-min(y))/(max(y)-min(y))
+  (sd(y)+0.001)/(mean(y)+0.001)
+  })
+  ecv <- ecdf(cv)(cv)
+  names(ecv) <- names(cv)
+  ecv
+  }))
+cts_tfs$regulon_cv <- apply(cts_tfs,1,function(x,regulon_activaty_cv){
+    regulon_activaty_cv[x[[2]],x[[1]]]
+},regulon_activaty_cv = regulon_activaty_cv)
+cts_tfs$exp_cv <- apply(cts_tfs,1,function(x,logcounts_exp_cv){
+  logcounts_exp_cv[x[[2]],x[[1]]]
+},logcounts_exp_cv = logcounts_exp_cv)
+
+cts_tf_regulons$regulon_cv <- apply(cts_tf_regulons,1,function(x,regulon_activaty_cv){
+  regulon_activaty_cv[x[[2]],x[[1]]]
+},regulon_activaty_cv = regulon_activaty_cv)
+cts_tf_regulons$exp_cv <- apply(cts_tf_regulons,1,function(x,logcounts_exp_cv){
+  logcounts_exp_cv[x[[2]],x[[1]]]
+},logcounts_exp_cv = logcounts_exp_cv)
+
+cts_tfs_diff <- cts_tfs %>% filter(padj<0.01 & CSS >0.3)
+cts_tf_regulons_diff <- cts_tf_regulons %>% filter(padj<0.01 & CSS >0.3 & exp_percent>0.3)
+
+
+
+
+cts_list <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/CST_res/CST_TFs_at_three_types.rds")
+cts_list_tbl <- data.table::rbindlist(cts_list_tbl,fill =T,idcol = "type")
+cts_list_tbl$regulon_cv <- apply(cts_list_tbl,1,function(x,regulon_activaty_cv){
+  regulon_activaty_cv[x[[3]],x[[2]]]
+},regulon_activaty_cv = regulon_activaty_cv)
+cts_list_tbl$exp_cv <- apply(cts_list_tbl,1,function(x,logcounts_exp_cv){
+  logcounts_exp_cv[x[['regulon']],x[['stage.x']]]
+},logcounts_exp_cv = logcounts_exp_cv)
+
+
+
+plot_frm <- cts_tfs[,c('regulon_cv', 'exp_cv')]
+plot_frm <- cts_tfs_diff[,c('regulon_cv', 'exp_cv')]
+
+plot_frm <- cts_list_tbl[,c('regulon_cv', 'exp_cv','type')]
+
+
+library(ggplot2)
+p <- ggplot(data = plot_frm)+
+  stat_ecdf(mapping = aes(x=exp_cv),color="blue")+
+  stat_ecdf(mapping = aes(x=regulon_cv),color="red")+
+  scale_x_continuous(limits=c(0,3))+
+  facet_wrap(.~type)
+p
+ks.test(plot_frm$logcounts_exp_cv,plot_frm$regulon_activaty_cv)
+
+```
+
+
+
+
+

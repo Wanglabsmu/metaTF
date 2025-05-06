@@ -1,0 +1,198 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#### 1.1 load data and perform dimension reduction
+
+```{r}
+library(Seurat)
+HD4_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+HD4_exp <- as.matrix(HD4_exp_data[,-1])
+row.names(HD4_exp) <- HD4_exp_data$gene_symbol
+HD4 <- CreateSeuratObject(counts = HD4_exp, project = "HD4_HSC")
+HD4[["percent.mt"]] <- PercentageFeatureSet(HD4, pattern = "^MT-")
+head(HD4@meta.data, 5)
+VlnPlot(HD4, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+HD4 <- NormalizeData(HD4, normalization.method = "LogNormalize", scale.factor = 10000)
+HD4 <- FindVariableFeatures(HD4, selection.method = "vst", nfeatures = 2000)
+HD4 <- ScaleData(HD4, use.umi=T)
+HD4 <- RunPCA(HD4, features = VariableFeatures(object = HD4))
+DimPlot(HD4, reduction = "pca",group.by = "orig.ident")
+HD4 <- FindNeighbors(HD4, dims = 1:50)
+HD4 <- FindClusters(HD4, resolution = 0.1)
+head(Idents(HD4), 5)
+HD4 <- RunUMAP(HD4, umap.method ="uwot", dims = 1:50)
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4)
+cluster_markers <- FindAllMarkers(HD4)
+write.table(cluster_markers,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/Seurat/markers/human_HD4_markers.txt",sep="\t",quote=F,row.names = F)
+saveRDS(HD4,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/human_HD4_seu.rds")
+```
+
+#### 1.2 infering cell types using SingleR
+```{r}
+HD4 <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/human_HD4_seu.rds")
+HD4_sce <- importFromSeurat(object = HD4)
+celldex_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/cell_markers/human_mouse_celldex.rds")
+be_res <- celldex_data$Blueprint
+
+library(SingleR)
+pred_HD4_sce <- SingleR(test = HD4_sce, ref = be_res, assay.type.test=1, labels = be_res$label.fine)
+table(pred_HD4_sce$labels)
+HD4@meta.data$labels <- pred_HD4_sce[row.names(HD4@meta.data),"labels"]
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4,group.by = "labels")
+
+new_cluster_ids <- c("GMP","HSC/MPP","CLP","MEP", "NK cells")
+names(new_cluster_ids) <- levels(HD4)
+HD4@meta.data$stage <- new_cluster_ids[HD4@meta.data$seurat_clusters]
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4,group.by = "stage")
+saveRDS(HD4,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/human_HD4_seu.rds")
+
+```
+
+
+#### 1.2 reduce dimi
+
+```{r}
+HD4 <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/seurat/objects/human_HD4_seu.rds")
+HD4_sce <- importFromSeurat(object = HD4)
+HD4_sce <- runPCA(x = HD4_sce,exprs_values = "logcounts")
+str(reducedDim(HD4_sce))
+HD4_sce <- runUMAP(x = HD4_sce,exprs_values = "logcounts")
+
+library(scater)
+library(scran)
+
+top.HD4_sce <- getTopHVGs(HD4_sce, n=5000)
+HD4_sce <- runPCA(HD4_sce, subset_row=top.HD4_sce) 
+g <- buildSNNGraph(HD4_sce, use.dimred="PCA")
+cluster <- igraph::cluster_walktrap(g)$membership
+colLabels(HD4_sce) <- factor(cluster)
+
+HD4_sce <- runTSNE(HD4_sce, dimred="PCA")
+HD4_sce <- runUMAP(HD4_sce, dimred="PCA")
+plotReducedDim(HD4_sce, dimred="UMAP",colour_by = "stage",text_by = "stage")
+
+```
+
+#### 1.3 reduce dimi with seurat
+
+```{r}
+library(Seurat)
+HD_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+HD_exp_mat <- as.matrix(HD_exp_data[,-1])
+row.names(HD_exp_mat) <- HD_exp_data[[1]]
+col_data <- sapply(stringr::str_split(colnames(HD_exp_mat),pattern = "_"),function(x){x[1]})
+col_data <- data.frame(patient = col_data)
+row.names(col_data) <- colnames(HD_exp_mat)
+
+HD_13 <- col_data[col_data$patient!="HD4",,drop=FALSE]
+HD_4 <- col_data[col_data$patient=="HD4",,drop=FALSE]
+HD_4_exp_data <- HD_exp_mat[,row.names(HD_4)]
+HD_4_exp_data_filter <- HD_4_exp_data[apply(HD_4_exp_data,1,function(x){length(x[x>0])>=10}),]
+saveRDS(HD_4_exp_data_filter,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD4_matrix_filter.rds")
+
+
+HD4 <- CreateHD4ratObject(counts = HD_exp_mat[,row.names(HD_4)], project = "HD_HSC")
+HD4[["percent.mt"]] <- PercentageFeatureSet(HD4, pattern = "^MT-")
+head(HD4@meta.data, 5)
+VlnPlot(HD4, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+HD4 <- NormalizeData(HD4, normalization.method = "LogNormalize", scale.factor = 5000)
+HD4 <- FindVariableFeatures(HD4, selection.method = "vst", nfeatures = 5000)
+HD4 <- ScaleData(HD4, use.umi=T)
+HD4 <- RunPCA(HD4, features = VariableFeatures(object = HD4))
+DimPlot(HD4, reduction = "pca",group.by = "orig.ident")
+HD4 <- FindNeighbors(HD4, dims = 1:10)
+HD4 <- FindClusters(HD4, resolution = 0.1)
+head(Idents(HD4), 5)
+HD4 <- RunUMAP(HD4, umap.method ="uwot", dims = 1:50)
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4,group.by = "orig.ident")
+DimPlot(HD4, reduction = "umap", label = TRUE, label.size=4)
+cluster_markers <- FindAllMarkers(HD4)
+VlnPlot(HD4, features = c("GATA2", "KLF1"), slot = "counts", log = TRUE)
+FeaturePlot(HD4, features = c("ITGAM", "IL3RA", "CD19", "MS4A1","PTPRC"))
+
+
+```
+
+#### 1.3 singleR
+```{r}
+library(celldex)
+
+celldex_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/cell_markers/human_mouse_celldex.rds")
+
+
+library(scRNAseq)
+hHSPC <- BunisHSPCData()
+hHSPC <- hHSPC[,!is.na(hHSPC$label)]
+
+library(SingleR)
+pred.hspc <- SingleR(test = hESCs, ref = hpca.se, assay.type.test=1,
+    labels = hpca.se$label.main)
+pred.grun <- SingleR(test=sceG, ref=sceM, labels=sceM$label, de.method="wilcox")
+table(pred.grun$labels)
+```
+
+
+#### 1.3 reduce dimi with monocle3
+
+```{r}
+library(monocle3)
+HD_13 <- col_data[col_data$patient!="HD4",,drop=FALSE]
+
+HD_exp_data <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/human_mouse_HSC/exp_data/human_HD_matrix_filter.rds")
+HD_exp_mat <- as.matrix(HD_exp_data[,-1])
+row.names(HD_exp_mat) <- HD_exp_data[[1]]
+cds <- new_cell_data_set(expression_data = HD_exp_mat[,row.names(HD_13)],cell_metadata = HD_13)
+## Step 1: Normalize and pre-process the data
+cds <- preprocess_cds(cds, num_dim =50, method = "PCA")
+plot_pc_variance_explained(cds)
+
+## Step 3: Reduce the dimensions using UMAP
+cds <- reduce_dimension(cds,reduction_method = "UMAP", preprocess_method = "PCA")
+plot_cells(cds, reduction_method = "UMAP", color_cells_by="patient")
+UMAP_res <- reducedDims(cds)$UMAP
+colnames(UMAP_res) = c("UMAP_1","UMAP_2")
+
+## Step 4: Cluster the cells
+cds <- cluster_cells(cds)
+clusters(cds)
+partitions(cds)
+
+plot_cells(cds, color_cells_by = "cluster",show_trajectory_graph = FALSE)
+
+## Step 5: Learn a graph
+cds <- learn_graph(cds,use_partition = FALSE)
+
+## Step 6: Order cells
+cds <- order_cells(cds)
+
+pHD4dotime_value = cds@principal_graph_aux@listData$UMAP$pHD4dotime
+plot_cells(cds, color_cells_by = "patient",show_trajectory_graph = F)
+names(sort(pHD4dotime_value))
+
+## Step 7: find markers
+marker_test_res <- top_markers(cds, group_cells_by="partition", 
+                               reference_cells=1000, cores=8)
+
+top_specific_markers <- marker_test_res %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(1, pHD4do_R2)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+
+plot_genes_by_group(cds,
+                    top_specific_marker_ids,
+                    group_cells_by="partition",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+
+assigned_type_marker_test_res <- top_markers(cds,
+                                             group_cells_by="assigned_cell_type",
+                                             reference_cells=1000,
+                                             cores=8)
+
+```
+

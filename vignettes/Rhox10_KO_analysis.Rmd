@@ -1,0 +1,22 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+```{r}
+counts_mat <- read.table("D:/HSC_Autophagy/3.TFKO_data/Benchmark_TF_KO/Rhox10_KO/GSE82174_TPM_Matrix.txt/GSE82174_TPM_Matrix.txt",sep="\t",header=T,row.names=1)
+
+KO_cells <- grep("^KO",colnames(counts_mat),value = T)
+WT_cells <- grep("^WTp3",colnames(counts_mat),value = T)
+all_cells <- c(rep("KO",length(KO_cells)),rep("WT",length(WT_cells)))
+names(all_cells) <- c(KO_cells, WT_cells)
+
+Rhox10_KO_mat <- counts_mat['Rhox10',c(KO_cells,WT_cells)]
+
+apply(Rhox10_KO_mat,1,function(x){tapply(x,all_cells[names(x)],median)})
+
+t.test(Rhox10_KO_mat[1,KO_cells],Rhox10_KO_mat[1,WT_cells])
+
+```
+

@@ -1,0 +1,63 @@
+---
+title: "Untitled"
+author: "Puwen Tan"
+date: "2021/6/21"
+output: html_document
+---
+
+### 1.load data
+```{r}
+WT_PP_matrix <- Seurat::Read10X("../ext_data/MAFB/raw_data/WT_PP/")
+colnames(WT_PP_matrix) <- paste("WT_",colnames(WT_PP_matrix),sep="")
+WT <- CreateSeuratObject(counts = WT_PP_matrix, project = "WT")
+
+KO_PP_matrix <- Seurat::Read10X("../ext_data/MAFB/raw_data/KO_PP/")
+colnames(KO_PP_matrix) <- paste("KO_",colnames(KO_PP_matrix),sep="")
+KO_PP <- CreateSeuratObject(counts = KO_PP_matrix, project = "KO")
+
+#######
+WT_beta_matrix <- Seurat::Read10X("../ext_data/MAFB/raw_data/WT_beta/")
+colnames(WT_beta_matrix) <- paste("WT_",colnames(WT_beta_matrix),sep="")
+WT_beta <- CreateSeuratObject(counts = WT_beta_matrix, project = "WT")
+
+KO_beta_matrix <- Seurat::Read10X("../ext_data/MAFB/raw_data/KO_beta/")
+colnames(KO_beta_matrix) <- paste("KO_",colnames(KO_beta_matrix),sep="")
+KO_beta <- CreateSeuratObject(counts = KO_beta_matrix, project = "KO")
+
+
+######
+MAFB_KO <- merge(x=WT_beta,y=KO_beta, project = 'MAFB_KO' )
+MAFB_KO <- subset(MAFB_KO, subset = nFeature_RNA > 200)
+VlnPlot(MAFB_KO, features = c("nFeature_RNA", "nCount_RNA"), ncol = 3)
+MAFB_KO[["percent.mt"]] <- PercentageFeatureSet(MAFB_KO, pattern = "^MT-")
+MAFB_KO <- subset(MAFB_KO, subset = nFeature_RNA > 2000 & nFeature_RNA < 7000 & percent.mt < 10)
+VlnPlot(MAFB_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+head(MAFB_KO@meta.data, 5)
+
+plot1 <- FeatureScatter(MAFB_KO, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(MAFB_KO, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+VlnPlot(MAFB_KO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+MAFB_KO <- NormalizeData(MAFB_KO, normalization.method = "LogNormalize", scale.factor = 10000)
+MAFB_KO <- FindVariableFeatures(MAFB_KO, selection.method = "vst", nfeatures = 2000)
+MAFB_KO <- ScaleData(MAFB_KO, use.umi=T)
+MAFB_KO <- RunPCA(MAFB_KO, features = VariableFeatures(object = MAFB_KO))
+DimPlot(MAFB_KO, reduction = "pca")
+MAFB_KO <- FindNeighbors(MAFB_KO, dims = 1:50)
+MAFB_KO <- FindClusters(MAFB_KO)
+MAFB_KO <- RunTSNE(object = MAFB_KO, dims.use = 1:50)
+DimPlot(MAFB_KO, reduction = "tsne", label = TRUE, label.size=4)
+#Cdh1---epithelial cells
+FeaturePlot(MAFB_KO, reduction = "tsne",features = "MAFB")
+
+MAFB_KO <- RunUMAP(MAFB_KO, umap.method ="uwot", dims = 1:50)
+DimPlot(MAFB_KO, reduction = "umap", label = TRUE, label.size=4)
+FeaturePlot(MAFB_KO, reduction = "umap",features = "MAFB")
+FeaturePlot(MAFB_KO, reduction = "umap",features = "MAFB",split.by = "orig.ident")
+VlnPlot(MAFB_KO, features = c("MAFB"), group.by = "orig.ident",ncol = 3)
+
+
+```

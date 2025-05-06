@@ -1,0 +1,1487 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+##### 1. load data and perform pseudotime analysis
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+expression_matrix <- assay(atfr,'logcounts')
+cell_metadata <- colData(atfr)
+colData(atfr)$stage <- reLevel(vect = colData(atfr)$stage,level_order = unique(colData(atfr)$stage))
+colLabels(atfr) <- colData(atfr)$stage
+library(scater)
+atfr <- scater::runPCA(x=atfr, ntop =500, exprs_values = "logcounts") 
+plotReducedDim(atfr, dimred="PCA",colour_by = "stage",text_by = "stage")
+atfr <- scater::runTSNE(x = atfr, ntop =500, exprs_values = "logcounts")
+plotReducedDim(atfr, dimred="TSNE",colour_by = "stage",text_by = "stage")
+atfr <- scater::runUMAP(x = atfr, exprs_values = "logcounts", ntop =500, pca=50,n_neighbors = 20)
+plotReducedDim(atfr, dimred="UMAP",colour_by = "stage",text_by = "stage")
+
+```
+
+##### 1. load data and perform pseudotime analysis with monocle
+
+```{r}
+library(monocle)
+expression_matrix <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/EHT_gene_count.rds")
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/exp_data/sample2stage.txt",header=T,sep="\t")
+row.names(col_metadata) <- col_metadata$sample
+col_metadata$stage <- factor(col_metadata$stage,levels=unique(col_metadata$stage))
+pd <- new("AnnotatedDataFrame", data = col_metadata)
+HSMM <- newCellDataSet(as.matrix(expression_matrix), phenoData = pd)
+HSMM <- estimateSizeFactors(HSMM)
+HSMM <- estimateDispersions(HSMM)
+HSMM <- reduceDimension(HSMM, max_components = 2, num_dim = 6,
+                reduction_method = 'tSNE', verbose = T)
+HSMM <- clusterCells(HSMM, num_clusters = 2)
+plot_cell_clusters(HSMM, 1, 2, color = "stage")
+
+HSMM <- reduceDimension(HSMM, max_components = 2,
+    method = 'DDRTree')
+HSMM <- orderCells(HSMM)
+HSMM$stage <- factor(HSMM$stage,levels=unique(HSMM$stage))
+
+p <- plot_cell_trajectory(HSMM, color_by = "stage",cell_size = 2)+
+  scale_color_manual(values=c("#729ece","#ff9e4a","#67bf5c","#ed665d","#ad8bc9","#a8786e"))
+ggsave(filename ="pseudotime.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 85, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+saveRDS(HSMM,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/HSMM.rds")
+col_data <- HSMM@phenoData@data
+
+```
+
+#### 2.1 differential TFs heatmap acorrding pseudotime
+
+```{r}
+library(tradeSeq)
+library(RColorBrewer)
+library(SingleCellExperiment)
+library(monocle)
+library(dplyr)
+cds <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/HSMM.rds")
+col_data <- cds@phenoData@data
+pseudotime <- col_data[order(col_data$Pseudotime),'Pseudotime',drop=F] %>% as.matrix()
+colnames(pseudotime) <- "HSC"
+cell_weight <- matrix(1,nrow=nrow(pseudotime))
+dimnames(cell_weight) <- list(row.names(pseudotime), "HSC")
+
+x <- pseudotime[,1]
+r <- range(x)
+b <- seq(from = r[1], to = r[2], length.out = (100))
+X <- table(cut(x, breaks = b , include.lowest = TRUE))
+
+
+stages <- c("AEC","HEC","T1_pre_HSC","T2_pre_HSC","FL_HSC","Adult_HSC")
+stage_pseudotime <- lapply(stages,function(i,col_data){
+  x <- col_data[,'Pseudotime']
+  r <- range(x)
+  b <- seq(from = r[1], to = r[2], length.out = 100)
+  stage_tbl <- col_data[col_data$stage %in% i,]
+  table(cut(stage_tbl$Pseudotime, breaks = b , include.lowest = TRUE))
+},col_data=col_data)
+names(stage_pseudotime) <- stages
+stage_pseudotime_tbl <- do.call(rbind,stage_pseudotime)
+#pheatmap(stage_pseudotime_tbl,scale="row",cluster_rows = F,cluster_cols = F)
+```
+
+
+##### 2.1.1 differential genes expression level
+
+```{r}
+#---expression level
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+logcounts <- assay(atfr,"logcounts")
+trade_sce <- fitGAM(counts = logcounts, cellWeights = cell_weight, pseudotime = pseudotime)
+exp_asso_res <- associationTest(trade_sce)
+exp_asso_res <- na.omit(exp_asso_res)
+exp_asso_res$p.adjust = p.adjust(exp_asso_res$pvalue, method="BH")
+saveRDS(exp_asso_res,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/all_gene_diff_test_res.rds")
+exp_asso_res_sig <- exp_asso_res[exp_asso_res$p.adjust<0.05,]
+exp_asso_res_sig <- exp_asso_res_sig[order(exp_asso_res_sig$p.adjust),]
+
+ysmooth_logcounts <- predictSmooth(models = trade_sce, gene = row.names(logcounts), nPoints = 154)
+saveRDS(ysmooth_logcounts,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_all_gene.rds")
+saveRDS(ysmooth_logcounts,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_all_gene.rds")
+
+ysmooth_logcounts_list <- split(ysmooth_logcounts,ysmooth_logcounts$gene)
+ysmooth_logcounts_list <- lapply(ysmooth_logcounts_list,function(x){
+  val <- x[['yhat']]
+  names(val) <- x[['time']]
+  val
+})
+ysmooth_logcounts_tbl <- do.call(rbind,ysmooth_logcounts_list)
+saveRDS(ysmooth_logcounts_tbl,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl_all_genes.rds")
+saveRDS(ysmooth_logcounts_tbl[intersect(row.names(ysmooth_logcounts_tbl),TFs),],"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl-V2.rds")
+
+
+#---heatmap
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+
+p <- pheatmap(ysmooth_logcounts_tbl[row.names(exp_asso_res_sig),],scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T,silent=T)
+#------how to change cluster order
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("cluster",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+anno_row = data.frame(cluster = cluster_name_ordered)
+anno_row$cluster = new_cluster_name[as.character(anno_row$cluster)]
+anno_row$cluster = factor(anno_row$cluster,
+levels = paste("cluster",1:cluster_num,sep=""))
+anno_col <- col_data[,c("stage","Pseudotime")]
+anno_col <- anno_col[order(anno_col$Pseudotime),"stage",drop=F]
+row.names(anno_col) <- colnames(plot_mat)
+anno_colors = list(stage=c(AEC='#729ece',HEC='#ff9e4a',T1_pre_HSC='#67bf5c',T2_pre_HSC='#ed665d',FL_HSC='#ad8bc9',Adult_HSC='#a8786e'))
+TFs <- TF_Symbols$mouse
+anno_row_TF <- anno_row[intersect(row.names(anno_row),TFs),,drop=F]
+
+plot_mat <- ysmooth_logcounts_tbl[intersect(row.names(anno_row),TFs),]
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, cluster_rows = F, cutree_rows = cluster_num, fontsize = 4, color = pal, show_rownames = F,show_colnames = T, annotation_row = anno_row_TF, main = "logcounts",annotation_col = anno_col, annotation_colors = anno_colors, gaps_row = cumsum(table(anno_row_TF$cluster)))
+
+ysmooth_logcounts_frm <- data.frame(anno_row_TF, exp_asso_res_sig[row.names(anno_row_TF),],check.names = F)
+new_cluster <- c("GP1","GP3","","GP2","GP4","GP6","","GP5")
+
+
+write.table(ysmooth_logcounts_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm-V2.tsv",sep="\t",quote=F)
+
+ggsave(filename ="differential_all_genes_heatmap_TF_only.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+median_ysmooth_logcounts <- apply(plot_mat,2,function(x){
+  tapply(x,anno_row_TF[names(x),"cluster"],median)
+})
+
+median_value_melt <- reshape2::melt(t(median_ysmooth_logcounts))
+colnames(median_value_melt) <- c("pseudotime","cluster","logcounts")
+
+library(ggplot2)
+q <- ggplot(median_value_melt,aes(x=pseudotime,y=logcounts))+
+  geom_smooth()+
+ # scale_y_continuous(limits = c(0,8),breaks = seq(0,8,by=4))+
+  facet_wrap(.~cluster,scales = "free_y",ncol=1)
+q
+ggsave(filename ="differential_TF_genes_heatmap_cluster_line-V2.pdf" ,plot = q, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 30, height =200, dpi = 600, limitsize = FALSE, units ="mm")
+
+TF_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm.tsv",sep="\t",header=T)
+TF_frm$old_cluster <- ysmooth_logcounts_frm[TF_frm$gene_name,"cluster"]
+
+```
+
+#### 2.2 differential TF regulons heatmap acorrding pseudotime
+
+```{r}
+#---regulon activate score level
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+active_score_ori <- assay(act_sce,"active_score")
+active_score <- t(apply(active_score_ori,1,function(x){10*(x-min(x))/(max(x)-min(x))}))
+trade_act <- fitGAM(counts = active_score, cellWeights = cell_weight, pseudotime = pseudotime)
+act_asso_res <- associationTest(trade_act)
+act_asso_res <- na.omit(act_asso_res)
+act_asso_res$p.adjust = p.adjust(act_asso_res$pvalue,method="BH")
+act_asso_res_sig <- act_asso_res[act_asso_res$p.adjust<0.05,]
+act_asso_res_sig <- act_asso_res_sig[order(act_asso_res_sig$p.adjust),]
+
+plotSmoothers(models = trade_act,active_score,gene="Batf3")
+plotSmoothers(models = trade_sce,logcounts,gene="Batf3")
+
+ysmooth_active_score <- predictSmooth(models = trade_act, gene = row.names(active_score), nPoints = 154)
+saveRDS(ysmooth_active_score,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score.rds")
+ysmooth_active_score_list <- split(ysmooth_active_score,ysmooth_active_score$gene)
+ysmooth_active_score_list <- lapply(ysmooth_active_score_list,function(x){
+  val <- x[['yhat']]
+  names(val) <- x[['time']]
+  val
+})
+ysmooth_active_score_tbl <- do.call(rbind,ysmooth_active_score_list)
+saveRDS(ysmooth_active_score_tbl,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+#---heatmap
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+plot_mat <- ysmooth_active_score_tbl[row.names(act_asso_res_sig),]
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T)
+#------how to change cluster order
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("pattern",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+anno_row = data.frame(cluster = cluster_name_ordered)
+anno_row$cluster = new_cluster_name[as.character(anno_row$cluster)]
+anno_row$cluster = factor(anno_row$cluster,
+levels = paste("pattern",1:cluster_num,sep=""))
+
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T, annotation_row = anno_row, main = "activate score",annotation_colors = anno_colors)
+activate_score_mat <- data.frame(anno_row, act_asso_res_sig[row.names(anno_row),],check.names = F)
+write.table(activate_score_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",quote=F)
+ggsave(filename ="differential_activate_TF_regulons_heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+median_active_score <- apply(plot_mat,2,function(x){
+  tapply(x,anno_row[names(x),"pattern"],median)
+})
+
+
+median_value_melt <- reshape2::melt(median_active_score)
+colnames(median_value_melt) <- c("cluster","pseudotime","activate_score")
+library(ggplot2)
+q <- ggplot(median_value_melt,aes(x=pseudotime,y=activate_score))+
+  geom_smooth()+
+ # scale_y_continuous(limits = c(0,8),breaks = seq(0,8,by=4))+
+  facet_wrap(.~cluster,scales = "free_y",ncol=1)
+q
+ggsave(filename ="differential_activate_TF_regulons_heatmap_cluster_line.pdf" ,plot = q, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 80, height =200, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+#### 2.3 overlap TF and TF regulons according pseudotime
+
+```{r}
+logcounts_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm.tsv",sep="\t",header=T,row.names=1)
+logcounts_frm <- logcounts_frm[intersect(TFs,row.names(logcounts_frm)),]
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+overlap_genes <- intersect(row.names(logcounts_frm),row.names(activate_score_frm))
+
+overlap_genes_merged <- data.frame(expression = logcounts_frm[overlap_genes,"pattern"], active_score=activate_score_frm[overlap_genes,"pattern"])
+row.names(overlap_genes_merged) <- overlap_genes
+library("easyalluvial")
+library("parcats")
+data <- overlap_genes_merged
+p = alluvial_wide(data, max_variables = 2,fill_by = "last_variable", order_levels=rev(paste("pattern",1:8,sep="")))
+pa <- parcats(p, marginal_histograms = FALSE, data_input = data)
+```
+
+#### 2.4 comparison between TF and TF regulons according pseudotime
+```{r}
+logcounts_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl.rds")
+logcounts_list <- as.list(as_tibble(t(logcounts_mat)))
+act_score_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+act_score_list <- as.list(as_tibble(t(act_score_mat)))
+
+logcounts_act_score_cor <- purrr::map2(.x = logcounts_list,.y = act_score_list,.f = function(x,y){
+  cor_test <- cor.test(x,y,method = "spearman")
+  data.frame(cor=cor_test$estimate,pval=cor_test$p.value)
+})
+logcounts_act_score_cor_tbl <- do.call(rbind,logcounts_act_score_cor)
+logcounts_act_score_cor_tbl$padj <- p.adjust(logcounts_act_score_cor_tbl$pval,method = "BH")
+logcounts_act_score_cor_tbl$isSig <- apply(logcounts_act_score_cor_tbl,1,function(x){
+  ifelse(x[3]<0.05,"sig","not_sig")
+})
+saveRDS(logcounts_act_score_cor_tbl,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/logcounts_active_score_spearman.rds")
+plot_frm <- logcounts_act_score_cor_tbl
+library(ggplot2)
+p <- ggplot(data = plot_frm, mapping = aes(x = cor,fill=isSig))+
+  geom_histogram(bins = 100)+
+  geom_vline(xintercept = c(-0.16,0.16))
+p
+
+ggsave(filename ="TF_and_TF_regulons_cor.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 80, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+#### 2.5 TF and TF regulons patterns correlation
+
+```{r}
+logcounts_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm-V2.tsv",sep="\t",header=T,row.names=1)
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+logcounts_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl-V2.rds")
+logcounts_mat <- logcounts_mat[row.names(logcounts_frm),]
+act_score_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+
+logcounts_pattern_mat <- apply(logcounts_mat,2,function(x){tapply(x,logcounts_frm[names(x),"cluster"],median)})
+act_score_pattern_mat <- apply(act_score_mat,2,function(x){tapply(x,activate_score_frm[names(x),"cluster"],median)})
+act_score_pattern_cor <- cor(t(act_score_pattern_mat),method = "spearman")
+
+cols <- brewer.pal(3, "PRGn")
+pal <- colorRampPalette(rev(cols))(100)
+p <- pheatmap(act_score_pattern_cor,cluster_rows = T,cluster_cols = T,scale="none",display_numbers = T,color = pal, clustering_method = 'ward.D2', fontsize = 8,legend_breaks = seq(-1,1,by=0.5), breaks = seq(-1,1,length.out=100),number_format = "%.1f",border_color = NA)
+ggsave(filename ="act_score_cluster_cor_heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 90, height =80, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+cormat <- matrix(NA,nrow=8,ncol=8)
+dimnames(cormat) <- list(row.names(logcounts_pattern_mat),row.names(act_score_pattern_mat))
+for(i in row.names(logcounts_pattern_mat)){
+  for(j in row.names(act_score_pattern_mat)){
+    cormat[i,j] <- cor(logcounts_pattern_mat[i,],act_score_pattern_mat[j,],method = "spearman")
+  }
+}
+
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "PRGn")
+pal <- colorRampPalette(rev(cols))(100)
+p <- pheatmap(cormat,cluster_rows = T,cluster_cols = T,scale="none",display_numbers = T,color = pal, breaks = seq(-1,1,length.out=100), number_format = "%.1f", border_color = NA)
+ggsave(filename ="act_score_and_TF_expression_cluster_cor_heatmap-V2.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =90, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+#### 2.5.2 TF and TF regulons patterns overlap TF genes
+
+```{r}
+
+logcounts_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm-V2.tsv",sep="\t",header=T,row.names=1)
+logcounts_all_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_all_diff_gene_frm.tsv",sep="\t",header=T,row.names=1)
+
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+overlap_tfs <- intersect(row.names(logcounts_frm),row.names(activate_score_frm))
+
+comparison_frm <- data.frame(logcounts_frm[overlap_tfs,],activate_score_frm[overlap_tfs,])
+table(comparison_frm$cluster,comparison_frm$cluster.1)
+
+
+```
+
+#### 2.6 bulk RNA-seq comparison
+
+```{r}
+EHT_bulk <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/EHT_bulk/GSE135600_HSC_GeneLevel_FPKM_5Stages.txt",sep="\t",header=T,row.names = 1)
+EHT_bulk <- EHT_bulk[apply(EHT_bulk,1,function(x){length(x[which(x>=1)])>1}),]
+gene_infor <- read.table("D:/HSC_Autophagy/ref_genome/gencode.vM25.gene.infor.rm.version.tsv",sep="\t",header=T,row.names=1)
+
+EHT_bulk <- apply(EHT_bulk,2,function(x){tapply(x,as.character(gene_infor[names(x),"gene_name"]),sum)})
+stages <- c("EC","EC","HEC","HEC","pre_HSC","pre_HSC","pre_HSC","FL_HSC","FL_HSC","BM_HSC","BM_HSC")
+sample2stage <- data.frame(sample=colnames(EHT_bulk),stage=stages)
+row.names(sample2stage) <- sample2stage$sample
+EHT_bulk_scale <- log2(EHT_bulk+1)
+
+
+stages_new <- c("AEC","HEC","pre_HSC","FL_HSC","BM_HSC")
+EHT_bulk_mean <- t(apply(EHT_bulk,1,function(x){tapply(x,stages,mean)}))
+saveRDS(EHT_bulk_mean[,stages_new],"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/EHT_bulk_mean_FPKM.rds")
+EHT_bulk_mean <- EHT_bulk_mean[,stages_new]
+EHT_bulk_mean <- log2(EHT_bulk_mean+1)
+
+exp_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.1_TF_exp_sce.rds")
+TF_exp <- as.matrix(logcounts(exp_sce))
+TF_exp_mean <- t(apply(TF_exp,1,function(x){tapply(x,colData(exp_sce)[names(x), "stage"], mean)}))
+TF_exp_mean_preHSC <- apply(TF_exp_mean[,3:4],1,mean)
+TF_exp_mean <- as.data.frame(TF_exp_mean)
+TF_exp_mean$pre_HSC <- TF_exp_mean_preHSC
+colnames(TF_exp_mean)[6] <- 'BM_HSC'
+TF_exp_mean <- TF_exp_mean[,stages_new]
+
+act_sce <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/viper/reducedDim/01.2_TF_act_sce.rds")
+TF_act <- as.matrix(assay(act_sce,"active_score"))
+TF_act <- apply(TF_act,1,function(x){(x-min(x))/(max(x)-min(x))})
+TF_act_mean <- t(apply(TF_act,2,function(x){tapply(x,colData(act_sce)[names(x), "stage"],mean)}))
+TF_act_mean <- as.data.frame(TF_act_mean)
+TF_act_mean$pre_HSC <- apply(TF_act_mean[,3:4],1,mean)
+colnames(TF_act_mean)[6] <- 'BM_HSC'
+TF_act_mean <- TF_act_mean[,stages_new]
+
+overlap_tfs <- intersect(row.names(EHT_bulk_mean),row.names(TF_exp_mean))
+
+bulk_TF_exp <- lapply(overlap_tfs,function(x,bulk,tf_exp){
+  cor_res <- cor.test(as.numeric(bulk[x,]),as.numeric(tf_exp[x,]))
+  data.frame(gene_name=x, cor = cor_res$estimate, pval = cor_res$p.value)
+},bulk=EHT_bulk_mean,tf_exp=TF_exp_mean)
+bulk_TF_exp_frm <- do.call(rbind,bulk_TF_exp)
+bulk_TF_exp_frm$type <- rep("exp_level",nrow(bulk_TF_exp_frm))
+
+
+bulk_TF_act <- lapply(overlap_tfs,function(x,bulk,tf_exp){
+  cor_res <- cor.test(as.numeric(bulk[x,]),as.numeric(tf_exp[x,]))
+  data.frame(gene_name=x, cor = cor_res$estimate, pval = cor_res$p.value)
+},bulk=EHT_bulk_mean,tf_exp=TF_act_mean)
+bulk_TF_act_frm <- do.call(rbind,bulk_TF_act)
+bulk_TF_act_frm$type <- rep("act_level",nrow(bulk_TF_act_frm))
+
+plot_frm <- rbind(bulk_TF_exp_frm, bulk_TF_act_frm)
+
+library(ggplot2)
+library(ggridges)
+p <- ggplot(plot_frm,mapping = aes(x = cor,fill=type))+
+  geom_histogram(bins = 50)
+p
+p <- ggplot(plot_frm, mapping = aes(x = cor, y= type, fill=type,height=..density..))+
+  geom_density_ridges_gradient(size = 1, scale = 1.4, panel_scaling = F, alpha=.8,na.rm=T)
+
+p
+
+library(plyr)
+plot_ecdf <- plot_frm
+plot_ecdf$cor <- abs(plot_ecdf$cor)
+plot_ecdf = ddply(plot_ecdf[,c("type","cor")], .(type), transform, ecdf = ecdf(cor)(cor) )
+
+
+text_size = 8
+line_size = 0.5
+p = ggplot(plot_ecdf,aes(x = cor, y=ecdf, color = type))+
+stat_ecdf(size = 1)
+p
+
+ggsave(filename ="bulk_exp_single_cell_TF_regulons_cor_ecdf.pdf.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 100, height =90, dpi = 600, limitsize = FALSE, units ="mm")
+
+logcounts_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/",sep="\t",header=T,row.names=1)
+
+EHT_kw_test <- pbapply::pbapply(EHT_bulk,1,function(x,stage){
+  g_list <- split(x,sample2stage[names(x),]$stage)
+  kruskal.test(x = g_list)$p.value
+},stage=sample2stage)
+EHT_kw_test_padj <- p.adjust(EHT_kw_test,method = "BH")
+
+EHT_anova_test <- pbapply::pbapply(EHT_bulk_scale,1,function(x,sample2stage){
+  sample2stage$exp <- x[row.names(sample2stage)]
+  anova(lm(formula = exp~stage,data = sample2stage))$`Pr(>F)`[1]
+},sample2stage=sample2stage)
+
+EHT_anova_test_padj <- p.adjust(EHT_anova_test,method = "BH")
+
+sample2stage$cell_weight <- rep(1,ncol(EHT_bulk))
+sample2stage$pseudotime <- c(1,1.1,2,2.1,3,3.1,3.2,4,4.1,5,5.1)
+pseudotime_bulk <- sample2stage[,"pseudotime",drop=FALSE]
+cell_weight_bulk <- sample2stage[,"cell_weight",drop=FALSE]
+trade_bulk <- fitGAM(counts = EHT_bulk, cellWeights = cell_weight_bulk, pseudotime = pseudotime_bulk)
+trade_bulk_res <- associationTest(trade_bulk)
+trade_bulk_res <- na.omit(trade_bulk_res)
+saveRDS(trade_bulk_res,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/bulk_EHT_diff_test_res.rds")
+trade_bulk_res$padj <- p.adjust(trade_bulk_res$pvalue,method = "BH")
+trade_bulk_sig <- trade_bulk_res[trade_bulk_res$padj<0.05,]
+
+trade_bulk_sig_tf <- trade_bulk_sig[intersect(row.names(trade_bulk_sig),TFs),]
+
+trade_bulk_TF_regulon_overlap <- intersect(row.names(trade_bulk_sig_tf), row.names(activate_score_frm))
+trade_bulk_TFs_overlap <- intersect(row.names(trade_bulk_sig_tf), row.names(logcounts_frm))
+trade_bulk_TFs_and_regulons_overlap <- intersect(trade_bulk_TF_regulon_overlap, trade_bulk_TFs_overlap)
+TF_and_regulon_overlap <- intersect(row.names(logcounts_frm), row.names(activate_score_frm))
+
+length(setdiff(row.names(trade_bulk_sig_tf),union(row.names(activate_score_frm),row.names(logcounts_frm))))
+length(setdiff(row.names(activate_score_frm),union(row.names(trade_bulk_sig_tf),row.names(logcounts_frm))))
+length(setdiff(row.names(logcounts_frm),union(row.names(trade_bulk_sig_tf),row.names(activate_score_frm))))
+
+#---heatmap
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+plot_mat <- EHT_bulk_scale[row.names(trade_bulk_sig_tf),]
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T)
+#------how to change cluster order
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("pattern",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+anno_row = data.frame(cluster = cluster_name_ordered)
+anno_row$cluster = new_cluster_name[as.character(anno_row$cluster)]
+anno_row$cluster = factor(anno_row$cluster,
+levels = paste("pattern",1:cluster_num,sep=""))
+
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T, annotation_row = anno_row, main = "activate score",annotation_colors = anno_colors)
+activate_score_mat <- data.frame(anno_row, EHT_bulk_scale[row.names(anno_row),],check.names = F)
+write.table(activate_score_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm_bulk_seq.tsv",sep="\t",quote=F)
+
+ggsave(filename ="differential_TF_gene_bulk_seq__heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+median_active_score <- apply(plot_mat,2,function(x){
+  tapply(x,anno_row[names(x),"pattern"],median)
+})
+
+
+
+
+
+
+
+```
+
+##### 2.6.1 bulk clusters heatmap
+
+```{r}
+stages_new <- c("AEC","HEC","pre_HSC","FL_HSC","BM_HSC")
+EHT_bulk_mean <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/EHT_bulk_mean_FPKM.rds")
+
+trade_bulk_res <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/bulk_EHT_diff_test_res.rds")
+trade_bulk_diff <- trade_bulk_res[trade_bulk_res$padj<0.05,]
+
+trade_bulk_diff_fpkm <- EHT_bulk_mean[row.names(trade_bulk_diff),]
+
+#---heatmap
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+plot_mat <- log2(trade_bulk_diff_fpkm+1)
+p <- pheatmap(plot_mat, scale="row", cluster_cols = F, clustering_method = "ward.D2", cutree_rows = cluster_num,fontsize = 4, color = pal,show_rownames = F,show_colnames = T)
+#------how to change cluster order
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("pattern",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+anno_row = data.frame(cluster = cluster_name_ordered)
+anno_row$cluster = new_cluster_name[as.character(anno_row$cluster)]
+anno_row$cluster = factor(anno_row$cluster,
+levels = paste("pattern",1:cluster_num,sep=""))
+
+trade_bulk_diff_sorted <- data.frame(gene_name = row.names(anno_row),anno_row, trade_bulk_diff[row.names(anno_row),])
+write.table(trade_bulk_diff_sorted,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/EHT_diff_frm_bulk_seq.tsv",sep="\t",row.names = F, quote=F)
+
+anno_row_tf <- anno_row[intersect(row.names(anno_row),TF_Symbols$mouse),,drop=FALSE]
+trade_bulk_diff_tf_sorted <- trade_bulk_diff_sorted[intersect(row.names(trade_bulk_diff_sorted),TF_Symbols$mouse),]
+write.table(trade_bulk_diff_tf_sorted,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/EHT_diff_TFs_from_bulk_seq.tsv",sep="\t",row.names = F, quote=F)
+
+
+plot_tf_mat <- plot_mat[row.names(anno_row_tf),]
+
+p <- pheatmap(plot_tf_mat, scale="row", cluster_cols = F,cluster_rows = F, fontsize = 4, color = pal, show_rownames = F,show_colnames = T, annotation_row = anno_row, main = "TF",annotation_colors = anno_colors,gaps_row = cumsum(table(anno_row_tf$cluster)))
+
+ggsave(filename ="differential_TF_genes_heatmap_bulk_RNA-seq.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+mean_tf_exp <- apply(plot_tf_mat,2,function(x){tapply(x,anno_row_tf[names(x),'cluster'], mean)})
+
+mean_tf_exp_melt <- reshape2::melt(mean_tf_exp)
+mean_tf_exp_melt <- reshape2::melt(plot_tf_mat)
+mean_tf_exp_melt$group <- anno_row_tf[mean_tf_exp_melt$cluster,"cluster"]
+colnames(mean_tf_exp_melt) <- c("cluster","stage","logFPKM")
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+plot_frm <- mean_tf_exp_melt
+q <- ggplot(plot_frm, aes(x=stage,y=logFPKM,group=cluster))+
+  geom_line(color="red")+
+  geom_point(shape=16,color="red")+
+#  geom_smooth(method="loess",color="red")+
+  facet_wrap(.~cluster, scale="free_y",ncol=1)+
+  mytheme
+q
+
+
+
+
+
+```
+
+##### 2.6.2 functional_enrichment
+
+```{r}
+trade_bulk_diff_sorted <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/EHT_diff_frm_bulk_seq.tsv",sep="\t",header=T)
+row.names(trade_bulk_diff_sorted) <- trade_bulk_diff_sorted$gene_name
+
+trade_bulk_diff_list <- split(trade_bulk_diff_sorted$gene_name,trade_bulk_diff_sorted$cluster)
+reactome_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/inst/extdata/Reactome_pathway.rds")
+mouse_reactome <- reactome_pathway$`Mus musculus`
+mouse_reactome_num <- sapply(mouse_reactome,length)
+mouse_reactome_filter <- mouse_reactome[between(mouse_reactome_num,10,500)]
+
+trade_bulk_diff_cluster_enrichment <- calcuModuleSimilar(tfr_list = trade_bulk_diff_list, pathway_list = mouse_reactome_filter, adjust = "BH" , ncores=6, fdr = 0.05, min_overlap = 5)
+fwrite(trade_bulk_diff_cluster_enrichment,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/EHT_bulk_seq_each_pattern_reactome_enrichment.tsv",sep="\t")
+
+```
+
+
+#### 2.7 TF and TF regulons candidates expression during pseudotime
+
+```{r}
+logcounts_frm <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts.rds")
+act_score_frm <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score.rds")
+
+ysmooth_logcounts_act_score <- full_join(logcounts_frm, act_score_frm,by=c('lineage'='lineage','time'='time', 'gene'='gene'))
+colnames(ysmooth_logcounts_act_score)[4:5] <- c("logcounts", "active_score")
+
+logcounts_active_score_spearman <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/logcounts_active_score_spearman.rds")
+logcounts_active_score_negative <- logcounts_active_score_spearman %>% filter(cor < -0.5 & padj<0.05)
+
+diff_act_res <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T)
+
+diff_act_neg_gene <- intersect(row.names(diff_act_res),row.names(logcounts_active_score_negative))
+diff_act_neg_tab <- diff_act_res[diff_act_neg_gene,]
+diff_act_neg_tab$cor <- logcounts_active_score_negative[diff_act_neg_gene,"cor"]
+
+
+i <- c("Hoxa9","Mycn","Gata2","Sox17","Sox7","Meis2","Myb","Bcl11a","Spi1","Runx1","Hlf","Tbx3","Foxo4","Hmga1","Dnmt1","Hoxa2","Hoxa3","Hoxa4","Hoxb5","Satb2","Sox2","Bptf","Ncoa2","Snai1","Cebpa","Sox2","Nfkb2","Cebpb","Erg","Zzz3","Bbx","Ngfa","Ash1l","Zkscan3","Ubp1","Klf6", "Nfix","Zbtb7a","Prdm16","Sp3")
+
+i <- c("Twist1")
+
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+
+plot_frm <- ysmooth_logcounts_act_score %>% filter(gene %in% i)
+
+
+p <- ggplot(plot_frm,aes(x=time))+
+  geom_smooth(mapping = aes(y=active_score),method="loess",color="red")+
+  facet_wrap(.~gene,scale="free")+
+  mytheme
+p
+ggsave(filename ="act_score_cluster_candidates.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 200, height =200, dpi = 600, limitsize = FALSE, units ="mm")
+q <- ggplot(plot_frm,aes(x=time))+
+  geom_smooth(mapping = aes(y=logcounts),method="loess",color="blue")+
+  facet_wrap(.~gene,scale="free")+
+  mytheme
+q
+p+q
+ggsave(filename ="logcounts_cluster_candidates.pdf" ,plot = q, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 210, height =200, dpi = 600, limitsize = FALSE, units ="mm")
+#---not used 
+scaleFactor <- max(plot_frm$logcounts) / max(plot_frm$active_score)
+scaleFactor <- 2
+library(ggplot2)
+q <- ggplot(plot_frm,aes(x=time))+
+  geom_smooth(mapping = aes(y=logcounts),method="loess",color="blue")+
+  geom_smooth(mapping = aes(y=active_score*scaleFactor),method="loess",color="red")+
+  scale_y_continuous(
+    # Features of the first axis
+    name = "logcounts",
+    sec.axis = sec_axis(~./scaleFactor, name="active_score")
+  )+
+  facet_wrap(.~gene)
+q
+```
+
+
+#### 2.7 TF regulons similarity correlation analysis
+
+```{r}
+atfr_regulons <- as.list(Regulon(atfr))
+atfr_regulon_similarity <- calcuModuleSimilar(tfr_list = atfr_regulons, pathway_list = atfr_regulons,fdr = 2,min_overlap = 0,ncores = 6, collapse_set = F)
+atfr_regulon_similarity_filter <- atfr_regulon_similarity %>% filter(similarity >0 & regulon != pathway)
+
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+act_score_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+act_score_mat_cor <- cor(t(act_score_mat),method = "spearman")
+activate_score_frm_c1 <- activate_score_frm %>% filter(cluster %in% "cluster1")
+diff_score_tf <- atfr_regulon_similarity_filter %>% filter(regulon %in% row.names(activate_score_frm_c1) & pathway %in% row.names(activate_score_frm_c1))
+diff_score_tf_int <- diff_score_tf[,1:2]
+diff_score_tf_int <- unique(as.data.frame(t(apply(diff_score_tf_int,1,function(x){sort(x)}))))
+write.table(diff_score_tf_int,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/diff_activate_score_similarity_network.tsv",sep="\t",row.names = F,quote=F)
+diff_score_tf_mat <- reshape2::dcast(atfr_regulon_similarity_filter[,1:3],formula = regulon~pathway)
+row.names(diff_score_tf_mat) <- diff_score_tf_mat$regulon
+diff_score_tf_mat <- diff_score_tf_mat[,-1]
+diff_score_tf_mat[is.na(diff_score_tf_mat)] <- 0
+
+act_score_mat_cor_norm <- sqrt(diff_score_tf_mat*abs(act_score_mat_cor))
+
+diff_score_tf_mat_module <- PIDC::matToNet(act_score_mat_cor_norm,cutoff = 0,ncores = 4)
+diff_score_tf_mat_module <- diff_score_tf_mat_module %>% filter(regulator %in% row.names(activate_score_frm) & target %in% row.names(activate_score_frm))
+diff_score_tf_int <- unique(as.data.frame(t(apply(diff_score_tf_mat_module[,1:2],1,function(x){sort(x)}))))
+
+write.table(diff_score_tf_int,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/diff_activate_score_similarity_network.tsv",sep="\t",row.names = F,quote=F)
+
+anno_row <- activate_score_frm[,1,drop=F]
+pheatmap(diff_score_tf_mat,scale="none",clustering_method = "ward.D2", fontsize = 3,annotation_row = anno_row)
+
+```
+#### 2.8 TF regulons TF expression correlation in each cluster
+
+```{r}
+activate_score_cluster <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+act_score_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+tf_exp_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl-V2.rds")
+
+overlap_tfs <- intersect(row.names(activate_score_cluster), row.names(act_score_mat))
+
+TF_regulon_cor <- lapply(overlap_tfs,function(x,tf_exp_mat,act_score_mat){
+  cor_res <- cor.test(x = as.numeric(tf_exp_mat[x,]),y=as.numeric(act_score_mat[x,]),method="spearman")
+  data.frame(gene_name=x,cor=cor_res$estimate,pval=cor_res$p.value)
+},act_score_mat=act_score_mat, tf_exp_mat=tf_exp_mat)
+TF_regulon_cor_tbl <- do.call(rbind,TF_regulon_cor)
+row.names(TF_regulon_cor_tbl) <- TF_regulon_cor_tbl$gene_name
+TF_regulon_cor_tbl$cluster <- activate_score_cluster[TF_regulon_cor_tbl$gene_name,"cluster"]
+
+library(ggplot2)
+library(ggridges)
+text_size = 8
+line_size = 0.5
+mytheme <- theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA),
+panel.grid.major = element_line(size=0.25*line_size, linetype = 8, color = "lightgray"),
+axis.ticks = element_line(size=line_size),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, color="black"), 
+axis.text.y= element_text(size=text_size, color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+plot_frm <- TF_regulon_cor_tbl
+plot_frm$cluster <- factor(plot_frm$cluster,levels=rev(sort(unique(plot_frm$cluster))))
+
+p <- ggplot(data = plot_frm,mapping = aes(x=cor, y=cluster, fill=cluster,height=..density..))+
+  geom_density_ridges_gradient(scale = 1.4, panel_scaling = F, alpha=.8,na.rm=T)+
+  labs(x='cor',y='',title = '')+
+  scale_x_continuous(limits = c(-1,1))+
+  mytheme
+p
+
+ggsave(filename ="act_score_tf_expression_correlation_by_cluster.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 100, height =120, dpi = 600, limitsize = FALSE, units ="mm")
+
+library(plyr)
+plot_ecdf = ddply(plot_frm[,c("cluster","cor")], .(cluster), transform, ecdf = ecdf(cor)(cor) )
+q = ggplot(plot_ecdf, aes(x = cor, y=ecdf, color = cluster))+
+stat_ecdf(size = line_size)+
+mytheme
+q
+
+
+```
+
+
+
+#### 3 pathway enrichment analysis
+
+#### 3.1 reactome pathway in different patterns
+
+```{r}
+#---pathways similarity analysis
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/objects/atfr.rds")
+activate_score_regulon <- as.list(Regulon(atfr)[row.names(activate_score_frm)])
+reactome_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/inst/extdata/Reactome_pathway.rds")
+mouse_reactome <- reactome_pathway$`Mus musculus`
+mouse_reactome_num <- sapply(mouse_reactome,length)
+mouse_reactome_filter <- mouse_reactome[between(mouse_reactome_num,10,500)]
+
+score_cst_regulons_reactome <- calcuModuleSimilar(tfr_list = activate_score_regulon, pathway_list = mouse_reactome_filter, adjust = "BH" , ncores=6, fdr = 0.05, min_overlap = 5)
+score_cst_regulons_reactome$pattern <- activate_score_frm[score_cst_regulons_reactome$regulon,"cluster"]
+saveRDS(score_cst_regulons_reactome,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.rds")
+fwrite(score_cst_regulons_reactome,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.tsv",sep="\t")
+
+score_cst_regulons_reactome_list <- split(score_cst_regulons_reactome$pathway,score_cst_regulons_reactome$regulon)
+overlp_term_frm <- calcuModuleSimilar(tfr_list = score_cst_regulons_reactome_list, pathway_list = score_cst_regulons_reactome_list, adjust = "BH" , ncores=6, fdr = 0.05, min_overlap = 1,collapse_set = F)
+overlp_term_frm_sig <- overlp_term_frm %>% filter(padj<0.05) %>% filter(regulon != pathway)
+overlp_term_frm_sig_int <- as.data.frame(t(apply(overlp_term_frm_sig[,1:2],1,function(x){sort(x)})))
+overlp_term_frm_sig_int <- cbind(overlp_term_frm_sig_int,overlp_term_frm_sig[,3:4])
+overlp_term_frm_sig_int <- unique(overlp_term_frm_sig_int)
+
+overlp_term_mat <- matrix(0, nrow=length(score_cst_regulons_reactome_list),ncol=length(score_cst_regulons_reactome_list))
+dimnames(overlp_term_mat) <- list(names(score_cst_regulons_reactome_list), names(score_cst_regulons_reactome_list))
+for(i in names(score_cst_regulons_reactome_list)){
+  for(j in names(score_cst_regulons_reactome_list)){
+    overlp_term_mat[i,j] <- length(intersect(score_cst_regulons_reactome_list[[i]],score_cst_regulons_reactome_list[[j]]))
+    
+  }
+}
+diag(overlp_term_mat) <- 0
+overlp_term_mat_melt <- reshape2::melt(overlp_term_mat) %>% filter(value>0)
+overlp_term_mat_melt <- as.data.frame(t(apply(overlp_term_mat_melt,1,function(x){c(sort(x[1:2]),x[3])}))) %>% unique()
+write.table(overlp_term_frm_sig_int,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/diff_activate_score_similarity_network.tsv",sep="\t",row.names = F,quote=F)
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+#---1
+module1_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module1.csv")
+module1_tfs <- unique(module1_tfs$name)
+module1_tfs_mat <- overlp_term_mat[module1_tfs,module1_tfs]
+module1_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module1_tfs)
+head(sort(table(module1_tfs_reactome$pathway),decreasing = T))
+module1_tfs_cluster <- table(activate_score_frm[module1_tfs,"cluster"])
+
+#---2
+module2_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module2.csv")
+module2_tfs <- module2_tfs$name
+module2_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module2_tfs)
+head(sort(table(module2_tfs_reactome$pathway),decreasing = T))
+module2_tfs_cluster <- table(activate_score_frm[module2_tfs,"cluster"])
+pie(module2_tfs_cluster)
+#---3
+module3_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module3.csv")
+module3_tfs <- module3_tfs$name
+module3_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module3_tfs)
+head(sort(table(module3_tfs_reactome$pathway),decreasing = T))
+module3_tfs_cluster <- table(activate_score_frm[module3_tfs,"cluster"])
+pie(module3_tfs_cluster)
+
+#---4
+module4_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module4.csv")
+module4_tfs <- module4_tfs$name
+module4_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module4_tfs)
+head(sort(table(module4_tfs_reactome$pathway),decreasing = T))
+module4_tfs_cluster <- table(activate_score_frm[module4_tfs,"cluster"])
+pie(module4_tfs_cluster)
+
+#---5
+module5_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module5.csv")
+module5_tfs <- module5_tfs$name
+module5_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module5_tfs)
+head(sort(table(module5_tfs_reactome$pathway),decreasing = T))
+module5_tfs_cluster <- table(activate_score_frm[module5_tfs,"cluster"])
+pie(module5_tfs_cluster)
+
+#---6
+module6_tfs <- read.csv("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/network/mcode/module6.csv")
+module6_tfs <- module6_tfs$name
+module6_tfs_reactome <- score_cst_regulons_reactome %>% filter(regulon %in% module6_tfs)
+head(sort(table(module6_tfs_reactome$pathway),decreasing = T))
+module6_tfs_cluster <- table(activate_score_frm[module6_tfs,"cluster"])
+pie(module6_tfs_cluster)
+```
+
+#### 3.2 reactome pathway in different patterns heatmap
+
+```{r}
+#----
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+activate_score_frm$gene <- row.names(activate_score_frm)
+activate_score_frm_new <- activate_score_frm %>% tidyr::separate_rows(DBD,sep="; ")
+#---Module1
+module1_activate <- activate_score_frm_new %>%filter(gene %in% module1_tfs)
+table(module1_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module1_activate$DBD))]
+module2_activate <- activate_score_frm_new %>%filter(gene %in% module2_tfs)
+table(module2_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module2_activate$DBD))]
+table(module2_activate$DBD)
+module3_activate <- activate_score_frm_new %>%filter(gene %in% module3_tfs)
+table(module3_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module3_activate$DBD))]
+table(module3_activate$DBD)
+module4_activate <- activate_score_frm_new %>%filter(gene %in% module4_tfs)
+table(module4_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module4_activate$DBD))]
+table(module4_activate$DBD)
+module5_activate <- activate_score_frm_new %>%filter(gene %in% module5_tfs)
+table(module5_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module5_activate$DBD))]
+table(module5_activate$DBD)
+module6_activate <- activate_score_frm_new %>%filter(gene %in% module6_tfs)
+table(module6_activate$DBD)/table(activate_score_frm_new$DBD)[names(table(module6_activate$DBD))]
+table(module6_activate$DBD)
+
+module1_tfs
+
+score_cst_regulons_reactome_filter <- score_cst_regulons_reactome %>% filter(firstInGroup==1)
+
+score_cst_regulons_reactome_clusters <- table(score_cst_regulons_reactome_filter$pathway,score_cst_regulons_reactome_filter$pattern)
+
+plot_mat <- score_cst_regulons_reactome_clusters
+plot_mat <- plot_mat[rowSums(plot_mat)>=2,]
+
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+
+
+
+
+anno_row <- rowSums(table(score_cst_regulons_reactome_filter$pathway,score_cst_regulons_reactome_filter$regulon))
+anno_row <- as.data.frame(anno_row[row.names(plot_mat)])
+colnames(anno_row) <- "num"
+p <- pheatmap(plot_mat,scale="row",show_rownames = T, fontsize = 6,clustering_method = "ward.D2", cluster_cols = F, color=pal, annotation_row = anno_row, treeheight_row = F)
+
+ggsave(filename ="reactome_pathway_cluster.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/",
+       width = 200, height =250, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+
+```
+
+###3.3 reactome enrichment each cluster
+
+```{r}
+score_cst_regulons_reactome <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.tsv",sep="\t",data.table=F)
+
+#---cluster1
+score_cst_regulons_reactome_c1 <- score_cst_regulons_reactome %>% filter(pattern=="cluster1" & firstInGroup==1)
+score_cst_regulons_reactome_c1_top <- head(sort(table(score_cst_regulons_reactome_c1$pathway),decreasing = T),10)
+selected_terms1 <- names(score_cst_regulons_reactome_c1_top)[1:4]
+score_cst_regulons_reactome_c1_selected <- score_cst_regulons_reactome_c1 %>% filter(pathway %in% selected_terms)
+
+overlp_C1_tf_num <- sapply(score_cst_regulons_reactome_c1_list,length)
+overlp_C1_tf_num <- data.frame(gene=names(overlp_C1_tf_num),num = overlp_C1_tf_num)
+write.table(overlp_C1_tf_num,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/network/cluster1_node_attr.tsv",sep="\t",quote=F,row.names=F)
+#---cluster2
+score_cst_regulons_reactome_c2 <- score_cst_regulons_reactome %>% filter(pattern=="cluster2")
+score_cst_regulons_reactome_c2_top <- head(sort(table(score_cst_regulons_reactome_c2$pathway),decreasing = T))
+selected_terms2 <- c('RHO GTPase cycle','Nuclear Receptor transcription pathway', 'MAPK family signaling cascades')
+score_cst_regulons_reactome_c1_selected <- score_cst_regulons_reactome_c1 %>% filter(pathway %in% selected_terms)
+#---cluster3
+score_cst_regulons_reactome_c3 <- score_cst_regulons_reactome %>% filter(pattern=="cluster3" & firstInGroup==1)
+score_cst_regulons_reactome_c3_top <- head(sort(table(score_cst_regulons_reactome_c3$pathway),decreasing = T))
+
+selected_terms3 <- names(score_cst_regulons_reactome_c3_top)[1:4]
+
+#---cluster4
+score_cst_regulons_reactome_c4 <- score_cst_regulons_reactome %>% filter(pattern=="cluster4" & firstInGroup==1)
+score_cst_regulons_reactome_c4_top <- head(sort(table(score_cst_regulons_reactome_c4$pathway),decreasing = T))
+selected_terms4 <- names(score_cst_regulons_reactome_c4_top)[1:4]
+
+#---cluster5
+score_cst_regulons_reactome_c5 <- score_cst_regulons_reactome %>% filter(pattern=="cluster5" & firstInGroup==1)
+score_cst_regulons_reactome_c5_top <- head(sort(table(score_cst_regulons_reactome_c5$pathway),decreasing = T))
+selected_terms5 <- c('Cell Cycle, Mitotic',"Regulation of TP53 Activity",'RHO GTPase cycle',"Signaling by Nuclear Receptors")
+
+#---cluster6
+score_cst_regulons_reactome_c6 <- score_cst_regulons_reactome %>% filter(pattern=="cluster6" & firstInGroup==1)
+score_cst_regulons_reactome_c6_top <- head(sort(table(score_cst_regulons_reactome_c6$pathway),decreasing = T))
+selected_terms6 <- c('Cytokine Signaling in Immune system','Cellular responses to stress','Signaling by PDGF','SUMOylation')
+
+#---cluster7
+score_cst_regulons_reactome_c7 <- score_cst_regulons_reactome %>% filter(pattern %in% c("cluster7")& firstInGroup==1)
+score_cst_regulons_reactome_c7_top <- head(sort(table(score_cst_regulons_reactome_c7$pathway),decreasing = T))
+selected_terms7 <- names(score_cst_regulons_reactome_c7_top)[1:2]
+
+#---cluster8
+score_cst_regulons_reactome_c8 <- score_cst_regulons_reactome %>% filter(pattern=="cluster8"& firstInGroup==1)
+score_cst_regulons_reactome_c8_top <- head(sort(table(score_cst_regulons_reactome_c8$pathway),decreasing = T))
+selected_terms8 <- names(score_cst_regulons_reactome_c8_top)[1:2]
+
+merged_terms <- unique(c(selected_terms1, selected_terms2, selected_terms3, selected_terms4, selected_terms5, selected_terms6, selected_terms7, selected_terms8))
+
+#---
+selected_reactome_term <- score_cst_regulons_reactome %>% filter(firstInGroup==1 & pathway %in% merged_terms)
+selected_reactome_term_stat <- table(selected_reactome_term$pathway,selected_reactome_term$pattern)
+
+
+
+
+plot_frm <- reshape2::melt(selected_reactome_term_stat)
+colnames(plot_frm) <- c("pathway","cluster","number")
+plot_frm <- plot_frm[plot_frm$number>0,]
+plot_frm$pathway <- factor(plot_frm$pathway,levels=rev(merged_terms))
+#------get my theme
+text_size = 8
+line_size = 0.5/1.07
+library(ggplot2)
+#------set plot theme
+mytheme = theme(line = element_line(size=line_size), text = element_text(size=text_size, color="black"), 
+panel.border = element_rect(size = line_size, fill=NA),
+panel.background = element_rect(fill=NA,color=NA),
+strip.background = element_rect(fill=NA,color=NA),
+strip.text = element_text(size=text_size,color="black"),
+panel.grid.major = element_line(size=line_size/2, linetype = 8, color = "lightgray"),
+panel.grid.minor = element_line(size=NA, color = NA),
+axis.ticks = element_line(size=line_size,color="black"),
+axis.title.x = element_text(size=text_size),
+axis.text.x= element_text(size=text_size, angle=45, hjust = 1, vjust =1,color="black"), 
+axis.text.y= element_text(size=text_size,color="black"),
+legend.text = element_text(size = text_size), 
+legend.title = element_text(size=text_size*1.2),
+plot.title=element_text(size=text_size, hjust=0.5,vjust=0.5),legend.position='right')
+
+
+p <- ggplot(plot_frm,aes(x=cluster,y=pathway,size=number))+
+  geom_point(shape=16)+
+  scale_y_discrete(position = "right")+
+  mytheme
+p
+ggsave(filename ="enrichment_terms.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/",
+       width = 230, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+```
+#### 3.4 all diff TF vs regulon level enrichment res
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/")
+logcounts_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_logcounts_tbl_all_genes.rds")
+logcounts_mat_mat <- 
+all_test_gene <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/all_gene_diff_test_res.rds")
+all_diff_gene <- all_test_gene %>% filter(p.adjust<0.05)
+logcounts_diff_mat <- logcounts_mat[row.names(all_diff_gene),]
+
+
+
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+cluster_num <- 8
+p <- pheatmap(mat = logcounts_diff_mat,scale = "row",show_rownames = F,show_colnames = F,color = pal,cutree_rows = cluster_num, silent = T,clustering_method = "ward.D2")
+
+#------how to change cluster order
+hclust.result<-p$tree_row
+cluster = cutree(hclust.result,k=cluster_num)
+cluster_name = paste("C",cluster,sep="")
+names(cluster_name) = names(cluster)
+hclust.result.order<-p$tree_row$order
+cluster_name_ordered = cluster_name[hclust.result.order]
+cluster_categroy = unique(cluster_name_ordered)
+new_cluster_name = paste("pattern",1:length(cluster_categroy),sep="")
+names(new_cluster_name) = cluster_categroy
+anno_row = data.frame(cluster = cluster_name_ordered)
+anno_row$cluster = new_cluster_name[as.character(anno_row$cluster)]
+anno_row$cluster = factor(anno_row$cluster,
+levels = paste("pattern",1:cluster_num,sep=""))
+
+#---anno col
+cds <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/HSMM.rds")
+col_data <- cds@phenoData@data
+anno_col <- col_data [,c("stage","Pseudotime")]
+anno_col <- anno_col[order(anno_col$Pseudotime),"stage",drop=F]
+row.names(anno_col) <- colnames(plot_mat)
+TFs <- TF_Symbols$mouse
+anno_row_TF <- anno_row[intersect(row.names(anno_row),TFs),,drop=F]
+anno_colors = list(stage=c(AEC='#729ece',HEC='#ff9e4a',T1_pre_HSC='#67bf5c',T2_pre_HSC='#ed665d',FL_HSC='#ad8bc9',Adult_HSC='#a8786e'))
+
+
+plot_mat <- logcounts_diff_mat[row.names(anno_row_TF),]
+p <- pheatmap(plot_mat,scale="row", cluster_cols = F, cluster_rows = F, fontsize = 4, color = pal,show_rownames = F,show_colnames = T, annotation_row = anno_row_TF, annotation_col = anno_col, main = "logcounts",annotation_colors = anno_colors, gaps_row = cumsum(table(anno_row_TF$cluster)))
+
+
+ysmooth_logcounts_frm <- data.frame(anno_row, exp_asso_res_sig[row.names(anno_row),],check.names = F)
+write.table(ysmooth_logcounts_frm,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm-V2.tsv",sep="\t",quote=F)
+
+ggsave(filename ="differential_TF_genes_heatmap-V2.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+#---line plot
+median_ysmooth_logcounts <- apply(logcounts_diff_mat,2,function(x){tapply(x,anno_row[names(x),"cluster"],mean)})
+median_value_melt <- reshape2::melt(t(median_ysmooth_logcounts))
+colnames(median_value_melt) <- c("pseudotime","cluster","logcounts")
+
+library(ggplot2)
+q <- ggplot(median_value_melt,aes(x=pseudotime,y=logcounts))+
+  geom_smooth()+
+ # scale_y_continuous(limits = c(0,8),breaks = seq(0,8,by=4))+
+  facet_wrap(.~cluster,scales = "free_y",ncol=1)
+q
+ggsave(filename ="differential_all_genes_heatmap_cluster_line_for_TF_only.pdf" ,plot = q, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/figure/",
+       width = 30, height =200, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+
+```{r}
+logcounts_diff_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_all_diff_gene_frm.tsv",sep="\t",header=T)
+logcounts_diff_frm$gene_name <- row.names(logcounts_diff_frm)
+
+logcounts_diff_tf_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/ysmooth_logcounts_frm-V2.tsv",sep="\t",header=T)
+
+logcounts_diff_gene_tf_overlap <- logcounts_diff_frm[row.names(logcounts_diff_tf_frm),]
+logcounts_diff_gene_tf_overlap$tf_cluster <- logcounts_diff_tf_frm[,"cluster"]
+
+
+
+logcounts_diff_list <- split(logcounts_diff_frm$gene_name,logcounts_diff_frm$cluster)
+
+reactome_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/scATFR/inst/extdata/Reactome_pathway.rds")
+mouse_reactome <- reactome_pathway$`Mus musculus`
+mouse_reactome_num <- sapply(mouse_reactome,length)
+mouse_reactome_filter <- mouse_reactome[between(mouse_reactome_num,10,500)]
+
+score_cst_regulons_reactome <- calcuModuleSimilar(tfr_list = logcounts_diff_list, pathway_list = mouse_reactome_filter, adjust = "BH" , ncores=6, fdr = 0.05, min_overlap = 5)
+saveRDS(score_cst_regulons_reactome,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/TF_logcounts_8_pattern_all_gene_pathway_enrichment.rds")
+fwrite(score_cst_regulons_reactome,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/TF_logcounts_8_pattern_all_gene_pathway_enrichment.tsv",sep="\t")
+
+
+```
+
+#### 3.5 all three methods enrhchment comparison
+
+```{r}
+tf_exp_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/TF_logcounts_8_pattern_all_gene_pathway_enrichment.rds")
+tf_regulon_pathway <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.tsv",sep="\t",header=T,data.table = F)
+bulk_tf_exp_pathway <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/EHT_bulk_seq_each_pattern_reactome_enrichment.tsv",sep="\t",header=T,data.table = F)
+
+
+```
+
+#### 3.6 selected pathway activity
+
+```{r}
+cts_tf_regulon_pathway <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.rds")
+head(sort(table(cts_tf_regulon_pathway$pathway),decreasing = T))
+cluster_1_3_pathway <- cts_tf_regulon_pathway %>% filter(pattern %in% c("cluster1","cluster3"))
+cell_cycle_pathway <- cluster_1_3_pathway %>% filter(pathway %in% c("Cell Cycle, Mitotic"))
+splicing_pathway <- cluster_1_3_pathway %>% filter(pathway %in% c("Processing of Capped Intron-Containing Pre-mRNA"))
+Autophagy_pathway <- cluster_1_3_pathway %>% filter(pathway %in% c("Autophagy"))
+
+act_score_mat <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/smooth_value/ysmooth_active_score_tbl.rds")
+act_score_diff <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,data.table=F)
+
+cell_cycle_pathway_mat <- act_score_mat[intersect(act_score_diff$gene_name, splicing_pathway$regulon),]
+splicing_pathway_mat <- act_score_mat[intersect(act_score_diff$gene_name, cell_cycle_pathway$regulon),]
+Autophagy_pathway_mat <- act_score_mat[intersect(act_score_diff$gene_name, Autophagy_pathway$regulon),]
+
+TFs_mat <- act_score_mat[c("Cebpa","Prdm16","Twist1"),]
+
+plot_mat <- rbind(cell_cycle_pathway_mat,splicing_pathway_mat, Autophagy_pathway_mat, TFs_mat)
+gene_name_rank <-c(row.names(cell_cycle_pathway_mat),row.names(splicing_pathway_mat),row.names(Autophagy_pathway_mat),c("Cebpa","Prdm16","Twist1"))
+gene_name_rank_num <-c(nrow(cell_cycle_pathway_mat),nrow(splicing_pathway_mat),nrow(Autophagy_pathway_mat))
+
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(9, "PRGn")
+pal <- colorRampPalette(rev(cols))(100)
+p <- pheatmap(mat = plot_mat,scale = "row",show_rownames = T,show_colnames = F,color = pal, silent = F, cluster_rows = F,cluster_cols = F,gaps_row = cumsum(gene_name_rank_num),labels_row = gene_name_rank, fontsize = 4)
+
+ggsave(filename ="main_pathway_neg_gene_heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 100, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+TFs_mat <- act_score_mat[c("Cebpa","Prdm16","Twist1"),]
+cols <- c("#1565c0","white","#c62828")
+pal <- colorRampPalette(cols)(100)
+p <- pheatmap(mat = TFs_mat,scale = "row",show_rownames = T,show_colnames = F,color = pal, silent = F, cluster_rows = F,cluster_cols = F)
+ggsave(filename ="Cebpa_Prdm16_gene_act_heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 200, height =50, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+
+```
+
+
+
+
+
+#### 4 KO data test
+
+```{r}
+Cebpa_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE42234.Cebpa.D21.table.tsv",sep="\t",header=T,data.table = F)
+Cebpa_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE42234.Cebpa.table.tsv",sep="\t",header=T,data.table = F)
+
+Cebpa_KO <- Cebpa_KO %>% tidyr::separate_rows(Gene.symbol,sep = '///')
+
+
+cts_tf_regulon_df <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res.rds")
+Cebpa_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Cebpa")
+
+Cebpa_KO_logFC <- tapply(Cebpa_KO$logFC,Cebpa_KO$Gene.symbol,mean)
+Cebpa_KO_logFC <- Cebpa_KO_logFC[-1]
+library(fgsea)
+enrich <- fgsea(Cebpa_regulon_df$targets, Cebpa_KO_logFC)
+p <- plotEnrichment(Cebpa_regulon_df$targets[["Cebpa"]],Cebpa_KO_logFC)
+p
+
+ggsave(filename ="Cebpa_KO_diff.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure",
+       width = 150, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+```
+
+#### edger diff
+
+```{r}
+doedgeR <- function(x, group){
+library(edgeR)
+x = x
+n = ncol(x)/2
+group = group
+y <- DGEList(counts = x, group = group)
+#keep <- rowSums(cpm(y)>1) >= 1
+#y <- y[keep, , keep.lib.sizes = FALSE]
+y <- calcNormFactors(y)
+design <- model.matrix(~group)
+if(n == 1){
+bcv <- 0.1
+ltr <- exactTest(y,dispersion=bcv^2)
+}else{
+y <- estimateDisp(y,design)
+fit <- glmFit(y,design)
+ltr <- glmLRT(fit, coef=2)
+}
+FDR <- p.adjust(ltr$table$PValue, method="BH")
+Direction <- decideTestsDGE(ltr,lfc=1)
+res<-cbind(ltr$table,FDR,Direction)
+res_order = res[order(res[,"FDR"]),]
+return(res_order)
+}
+
+Prdm16_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE112860_VAVFL_RNAseq_Counts.txt.gz",sep="\t",header=T,data.table = F)
+Prdm16_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE112860_47bpFL_RNAseq_Counts.txt.gz",sep="\t",header=T,data.table = F)
+Prdm16_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE112860_VAVBM_RNAseq_Counts.txt/GSE112860_VAVBM_RNAseq_Counts.txt",sep="\t",header=T,data.table = F)
+Prdm16_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE154011_Prdm16_normalized_gene_counts_matrix.txt.gz",sep="\t",header=T,data.table = F)
+row.names(Prdm16_KO) <- Prdm16_KO$GeneID
+gene_infor <- fread("D:/HSC_Autophagy/important_genes/orthlogo_gene/NCBI/gene_info/gene_info",sep="\t",header=T)
+gene_infor <- gene_infor %>% filter(GeneID %in% Prdm16_KO$GeneID) %>% select(GeneID, Symbol)
+Prdm16_KO <- inner_join(Prdm16_KO,gene_infor,by=c("GeneID"="GeneID"))
+
+Prdm16_KO_mat <- apply(Prdm16_KO[,2:7],2,function(x){tapply(x,Prdm16_KO[,8],sum)})
+Prdm16_KO_mat <- t(apply(Prdm16_KO_mat,1,function(x){(x-min(x))/(max(x)-min(x))}))
+Prdm16_KO_logFC <- log2((apply(Prdm16_KO_mat[,4:6],1,mean))/(apply(Prdm16_KO_mat[,1:3],1,mean)))
+
+Prdm16_KO_mat <- Prdm16_KO_mat[rowSums(Prdm16_KO_mat)>10,]
+group <- colnames(Prdm16_KO_mat)
+condition = factor(c(rep("WT",4),rep("KO",4)),levels=c("WT","KO"))
+
+de_res = doedgeR(x = Prdm16_KO_mat, group = condition)
+Prdm16_KO_logFC <- de_res[,"logFC"]
+names(Prdm16_KO_logFC) <-row.names(de_res)
+
+cts_tf_regulon_df <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res.rds")
+Prdm16_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Prdm16")
+Prdm16_regulon_list <- Prdm16_regulon_df$targets
+Prdm16_regulon_list <- lapply(Prdm16_regulon_list, function(x){intersect(x,names(Prdm16_KO_logFC))})
+
+library(fgsea)
+enrich <- fgsea(Prdm16_regulon_list, Prdm16_KO_logFC)
+p <- plotEnrichment(Prdm16_regulon_list$Prdm16,Prdm16_KO_logFC)
+p
+ggsave(filename ="Prdm16_KO_diff.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure",
+       width = 150, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+
+```
+
+#### 4.3 Twist1
+
+```{r}
+doedgeR <- function(x, group){
+library(edgeR)
+x = x
+n = ncol(x)/2
+group = group
+y <- DGEList(counts = x, group = group)
+#keep <- rowSums(cpm(y)>1) >= 1
+#y <- y[keep, , keep.lib.sizes = FALSE]
+y <- calcNormFactors(y)
+design <- model.matrix(~group)
+if(n == 1){
+bcv <- 0.1
+ltr <- exactTest(y,dispersion=bcv^2)
+}else{
+y <- estimateDisp(y,design)
+fit <- glmFit(y,design)
+ltr <- glmLRT(fit, coef=2)
+}
+FDR <- p.adjust(ltr$table$PValue, method="BH")
+Direction <- decideTestsDGE(ltr,lfc=1)
+res<-cbind(ltr$table,FDR,Direction)
+res_order = res[order(res[,"FDR"]),]
+return(res_order)
+}
+Twist1_WT <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE107814_RAW_Twist1/GSM2879636_WT.txt.gz",header=T,data.table = F)
+Twist1_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/GSE107814_RAW_Twist1/GSM2879637_Twist1_KO.txt/GSM2879637_Twist1_KO.txt",header=T,data.table = F)
+Twist1_KO_all <- inner_join(Twist1_WT,Twist1_KO,by=c('geneID'='geneID'))
+gene_infor <- read.table("D:/HSC_Autophagy/ref_genome/gencode.vM25.gene.infor.rm.version.tsv",sep="\t",header=T,row.names=1)
+Twist1_KO_all$gene_name <- gene_infor[Twist1_KO_all$geneID,]$gene_name
+Twist1_KO_all$logFC <- log2(Twist1_KO_all$`Twist1 KO`/Twist1_KO_all$WT)
+Twist1_KO_logFC <- tapply(Twist1_KO_all$logFC,Twist1_KO_all$gene_name,mean)
+Twist1_KO_logFC <- scale(Twist1_KO_logFC)
+
+cts_tf_regulon_df <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res.rds")
+Twist1_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Twist1")
+Twist1_regulon_list <- Twist1_regulon_df$targets[1]
+#Prdm16_regulon_list <- lapply(Prdm16_regulon_list, function(x){intersect(x,names(Prdm16_KO_logFC))})
+library(fgsea)
+enrich <- fgsea(Twist1_regulon_list, Twist1_KO_logFC)
+p <- plotEnrichment(Twist1_regulon_list$Twist1,Twist1_KO_logFC)
+p
+
+```
+
+#### Tcf15
+
+```{r}
+Tcf15_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/Tcf15/GSE42539.D0.OE.table.tsv",sep="\t",header=T,data.table = F)
+Tcf15_KO <- fread("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/Tcf15/GSE42539.D8.OE.table.tsv",sep="\t",header=T,data.table = F)
+Tcf15_KO <- Tcf15_KO %>% tidyr::separate_rows(Gene.symbol,sep = '///')
+
+cts_tf_regulon_df <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/diff_tfs/cts_tf_regulons_diff_res.rds")
+Tcf15_regulon_df <- cts_tf_regulon_df %>% filter(regulon %in% "Tcf15")
+
+Tcf15_KO_logFC <- tapply(Tcf15_KO$logFC,Tcf15_KO$Gene.symbol,mean)
+Tcf15_KO_logFC <- Tcf15_KO_logFC[-1]
+Tcf15_regulon_list <- lapply(Tcf15_regulon_df$targets,function(x){intersect(x,Tcf15_KO$Gene.symbol)})
+library(fgsea)
+enrich <- fgsea(Tcf15_regulon_list, Tcf15_KO_logFC)
+p <- plotEnrichment(Tcf15_regulon_df$targets[["Tcf15"]],Tcf15_KO_logFC)
+p
+
+ggsave(filename ="Tcf15_OE_diff.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/test_KO_data/figure",
+       width = 150, height =100, dpi = 600, limitsize = FALSE, units ="mm")
+```
+
+
+
+#### 5 regulon TFs DNA binding domain 
+
+```{r}
+activate_score_reactome_cluster1 <- score_cst_regulons_reactome %>% filter(pattern=="cluster1")
+activate_score_reactome_others <- score_cst_regulons_reactome %>% filter(pattern!="cluster1")
+activate_score_reactome_cluster1_only <- activate_score_reactome_cluster1 %>% filter(! pathway %in% activate_score_reactome_others$pathway) %>% filter(firstInGroup==1)
+activate_score_reactome_cluster1_only
+
+
+
+
+
+
+regulon_reactome_pathway <- regulon_reactome_pathway %>% filter(padj<0.05 & sapply(overlap_targets,length)>=5)
+activate_score_reactome <- regulon_reactome_pathway %>% filter(regulon %in% row.names(activate_score_frm))
+activate_score_reactome$cluster <- activate_score_frm[activate_score_reactome$regulon,"cluster"]
+activate_score_reactome_cluster1 <- activate_score_reactome %>% filter(cluster=="cluster1")
+activate_score_reactome_cluster1_mrege <- inner_join(activate_score_reactome_cluster1,activate_score_reactome_cluster1, by=c("regulon"="regulon"))
+activate_score_reactome_cluster1_mrege <- activate_score_reactome_cluster1_mrege[,c("regulon","pathway.x","pathway.y")]
+activate_score_reactome_cluster1_mrege <- activate_score_reactome_cluster1_mrege %>% filter(pathway.x != pathway.y)
+
+
+activate_score_reactome_cluster1_pathway <- table(activate_score_reactome_cluster1$pathway)
+activate_score_reactome_cluster1_pathway_2 <- activate_score_reactome_cluster1_pathway[activate_score_reactome_cluster1_pathway>1]
+
+TF_infors <- fread("D:/HSC_Autophagy/important_genes/Human_TFs/TF_infors_v_1.01.txt",sep="\t",header=T)
+TF_infors <- TF_infors[,3:4]
+TF_infors_mmu <- getHomologGene(input_gene = TF_infors$`HGNC symbol`,output_type = "gene_symbol")
+TF_infors_mmu <- inner_join(TF_infors_mmu,TF_infors,by=c('Gene_Symbol_human'='HGNC symbol'))
+fwrite(TF_infors_mmu,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/TFs/hsa_mmu_TF_domain_infor.tsv",sep="\t")
+TF_infors_mmu_filter <- TF_infors_mmu[,-1] %>% unique() %>% as.data.frame()
+row.names(TF_infors_mmu_filter) <- TF_infors_mmu_filter$Gene_Symbol_mouse
+activate_score_frm$DBD <- TF_infors_mmu_filter[row.names(activate_score_frm),"DBD"]
+activate_score_frm$gene_name <- row.names(activate_score_frm)
+activate_score_frm_new <- activate_score_frm %>% tidyr::separate_rows(DBD,sep="; ")
+
+
+stat <- table(activate_score_frm_new$DBD,activate_score_frm_new$cluster)
+stat_filter <- stat[rowSums(stat)>=1,]
+stat_ratio <- apply(stat_filter,2,function(x){x/sum(x)})
+
+library(pheatmap)
+library(RColorBrewer)
+cols <- brewer.pal(3, "YlOrRd")
+cols <- c("#aa00ff","black","#ffff00")
+pal <- colorRampPalette(cols)(100)
+anno_row <- as.data.frame(log(rowSums(stat)+1))
+colnames(anno_row) <- "num"
+p <- pheatmap(t(stat_ratio), scale="column", cluster_rows = F, clustering_method = "ward.D2", angle_col=315, color = pal, cutree_cols = 8, fontsize = 8,annotation_col = anno_row)
+ggsave(filename ="pattern_domain_heatmap.pdf" ,plot = p, device = "pdf", 
+       path = "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/figure/",
+       width = 250, height =70, dpi = 600, limitsize = FALSE, units ="mm")
+
+
+fwrite(activate_score_reactome_cluster1_mrege,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/cluster1.tsv",sep="\t")
+
+
+activate_score_reactome_cluster2 <- activate_score_reactome %>% filter(cluster=="cluster2")
+activate_score_reactome_cluster3 <- activate_score_reactome %>% filter(cluster=="cluster3")
+activate_score_reactome_cluster4 <- activate_score_reactome %>% filter(cluster=="cluster4")
+activate_score_reactome_cluster5 <- activate_score_reactome %>% filter(cluster=="cluster5")
+activate_score_reactome_cluster6 <- activate_score_reactome %>% filter(cluster=="cluster6")
+activate_score_reactome_cluster7 <- activate_score_reactome %>% filter(cluster=="cluster7")
+activate_score_reactome_cluster8 <- activate_score_reactome_ %>% filter(cluster=="cluster8")
+
+#--autophagy
+
+autophagy <- regulon_reactome_pathway %>% filter(pathway %in% "Autophagy")
+autophagy$cluster <- activate_score_frm[autophagy$regulon,"cluster"]
+autophagy_regulons <- na.omit(autophagy)
+```
+
+
+#### 2.4 splicing pathway analysis
+```{r}
+pattern_reactome <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/All_8_patterns_reactome_enrichment_res.rds")
+
+splicing_pathway <- pattern_reactome %>% filter(pathway %in% 'mRNA Splicing')
+splicing_pathway_genes <- splicing_pathway %>% select(regulon,overlap_targets,pattern)
+splicing_pathway_TF_Target <- purrr::map2(splicing_pathway_genes$overlap_targets, splicing_pathway_genes$regulon,
+                                          .f=function(x,y){
+                                            data.frame(tf=rep(y,length(x)),target=x)
+                                          })
+splicing_pathway_TF_Target <- do.call(rbind,splicing_pathway_TF_Target) %>% filter(tf != target) %>% unique()
+splicing_pathway_TF_Target$pattern <- activate_score_frm[splicing_pathway_TF_Target$tf,"cluster"]
+fwrite(splicing_pathway_TF_Target,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/mRNA_splicing.tsv",sep="\t")
+splicing_pathway_TFs <- unique(splicing_pathway_TF_Target$tf)
+splicing_pathway_targets <- setdiff(unique(splicing_pathway_TF_Target$target),splicing_pathway_TFs)
+tf_clusters <- unique(splicing_pathway_TF_Target[,c(1,3)])
+colnames(tf_clusters) <- c("gene","cluster")
+target_clusters <- unique(splicing_pathway_TF_Target[,-1])
+colnames(target_clusters) <- c("gene","cluster")
+tf_target_clusters <- rbind(tf_clusters, target_clusters) %>% unique()
+tf_target_clusters_attr <- tapply(tf_target_clusters$cluster,tf_target_clusters$gene,paste0,collapse=";")
+
+splicing_pathway_attritube <- data.frame(gene =c(splicing_pathway_TFs,splicing_pathway_targets),
+                                         attr = c(rep("tf",length(splicing_pathway_TFs)), 
+                                                  rep("target",length(splicing_pathway_targets))))
+splicing_pathway_attritube$attr2 <- tf_target_clusters_attr[splicing_pathway_attritube$gene]
+
+fwrite(splicing_pathway_attritube,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/pathway/mRNA_splicing_node_attritube.tsv",sep="\t")
+
+activate_score_frm <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/EHT_analysis/pseudotime/diff_res/activate_score_frm.tsv",sep="\t",header=T,row.names=1)
+
+splicing_DBD <- activate_score_frm_new %>% filter(gene_name %in% splicing_pathway_TFs)
+
+```
+ 
+#### 2.4 autophagy pathway analysis
+
+```{r}
+
+```
+
+
+#### 2.2 divergent TF and TF regulons according pseudotime
+
+```{r}
+
+
+```
+

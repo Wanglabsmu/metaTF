@@ -1,0 +1,58 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#### 1.1 load data and create object
+
+```{r}
+library(scATFR)
+library(PIDC)
+exp_data <- readRDS(system.file("./inst/extdata/mouse_HSC_formation_expression.rds",package = "scATFR"))
+col_metadata <- readRDS(system.file("./inst/extdata/mouse_HSC_formation_colData.rds",package = "scATFR"))
+row.names(col_metadata) <- col_metadata$sample
+atfr <- scATFR(exp_data = exp_data,col_data = col_metadata)
+
+```
+
+#### 1.2 Inferring gene regulatory network
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/HSC_development/GRNs/atfr_pidc_grn.rds")
+PIDC_regulon <- matToNet(weightMat = as.matrix(GRN(atfr,"pidc")),ncores = 6)  
+PIDC_nets <- as.matrix(GRN(atfr,"pidc")) %>% reshape2::melt(.) %>% filter(Var1 %in% TF_gene)
+colnames(PIDC_nets) <- c("tf","target","weight")
+#PIDC_nets_filter <- PIDC_nets %>% group_by(tf) %>% top_n(n=1000) %>% as.data.frame()
+#---load regulons
+blood_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/merged_network/mouse/pantissue_network.txt.gz",sep="\t",header=T)
+PIDC_regulon <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/HSC_development/GRNs/pidc_grn_regulons.rds")
+regulons <- blood_network %>% filter(tf %in% TF_gene)
+interged_regulons <- integraNets(grnNets = list(PIDC_nets,regulons),norm_weight = T,
+                                 max_target_num=5000, min_target_num = 50,
+                                 join_type = "left", return_sig = T,ncores = 6)
+interged_regulon_list <- dfToList(regulons)
+atfr <- filterRegulons(x = atfr, gene_list=interged_regulon_list, maxSize=1000)
+sapply(Regulon(atfr),length)
+atfr <- regulonActivity(x = atfr, method="viper")
+active_mat <- assay(altExp(atfr,"viper"))
+```
+
+#### 1.3 dimensiona reduction
+
+```{r}
+active_mat <- assay(altExp(atfr,"viper"))
+exp_mat <- assay(atfr)[row.names(active_mat),]
+sce_exp <- SingleCellExperiment(assays=list(counts=exp_mat))
+colData(sce_exp) <- DataFrame(atfr@meta.data)
+sce_exp <- logNormCounts(sce_exp)
+top.gene <- getTopHVGs(sce_exp, n=5000)
+sce_exp <- runPCA(sce_exp, subset_row=top.gene) 
+plotReducedDim(sce_exp, dimred="PCA",colour_by = "orig.ident")
+g <- buildSNNGraph(sce_exp, use.dimred="PCA")
+cluster <- igraph::cluster_walktrap(g)$membership
+colLabels(sce_exp) <- factor(cluster)
+sce_exp <- runTSNE(sce_exp, dimred="PCA")
+
+```
+
+
+

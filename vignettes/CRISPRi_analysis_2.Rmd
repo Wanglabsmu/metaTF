@@ -1,0 +1,212 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### 1. CRISPRi drop-out test
+#------CRISPRi drop-out test
+
+```{r}
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/objects/atfr.rds")
+exp_mat <- as.matrix(assay(atfr,"counts"))
+exp_mat_large <- length(exp_mat[exp_mat>0])
+exp_mat_large/length(exp_mat)
+hist(apply(exp_mat,2,function(x){length(x[x>0])}))
+
+drop_out_ratio <- c(0.05,seq(0.1,0.8,by=.1))
+test_frm <- pbapply::pblapply(drop_out_ratio,function(x, atfr){
+  #---sample
+  mat <- as.matrix(assay(x = atfr, i = "counts"))
+  exp_mat_out <- mat
+  drop_out_len <- round(length(mat)*x)
+  exp_mat_out[sample(x = 1:length(mat),size = drop_out_len)] <- 0
+  assay(atfr,"counts") <- exp_mat_out
+  atfr <- scater::logNormCounts(atfr)
+  tfs <- setdiff(unique(colData(atfr)$TF),"Scramble")
+  #---
+  atfr <- inferGRNs(atfr, method = "pidc", ncores=16)
+  atfr <- inferGRNs(atfr, method = "pcor", use_assay = "logcounts", ncores=16)
+  atfr <- inferGRNs(atfr, method = "genie3", use_assay = "logcounts", use_regulator =tfs, ncores=16)
+  atfr
+  return(atfr)
+}, atfr=atfr)
+names(test_frm) <- drop_out_ratio
+
+test_frm_sper <- sapply(test_frm,function(x){
+  length(x[which(x>0)])/length(x)
+})
+
+drop_out_ratio <- c(0.05,seq(0.1,0.8,by=.1))
+grn_test_list <- pbapply::pblapply(drop_out_ratio,function(x, atfr){
+  #---sample
+  mat <- as.matrix(assay(x = atfr, i = "counts"))
+  exp_mat_out <- mat
+  drop_out_len <- round(length(mat)*x)
+  exp_mat_out[sample(x = 1:length(mat),size = drop_out_len)] <- 0
+  assay(atfr,"counts") <- exp_mat_out
+  atfr <- scater::logNormCounts(atfr)
+  tfs <- setdiff(unique(colData(atfr)$TF),"Scramble")
+  #---
+  atfr <- inferGRNs(atfr, method = "pidc", ncores=16)
+  atfr <- inferGRNs(atfr, method = "pcor", use_assay = "logcounts", ncores=16)
+  atfr <- inferGRNs(atfr, method = "genie3", use_assay = "logcounts", use_regulator =tfs, ncores=16)
+  saveRDS(atfr,paste("atfr_",x,"drop_out.rds",sep=""))
+  atfr
+}, atfr=atfr)
+names(test_grns) <- drop_out_ratio
+
+
+
+```
+### 2. CRISPRi drop-out test
+
+#### 2.1 scATFR
+
+```{r}
+obj_dir <- "D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/GRNs/test_grns/"
+files <- list.files(obj_dir)[1:9]
+
+atfr_list <- lapply(files, function(x, obj_dir){
+  readRDS(file = file.path(obj_dir, x))
+},obj_dir=obj_dir)
+names(atfr_list) <- files
+#---calculate the PIDC grn using aracne
+
+PIDC_net_list <- lapply(atfr_list, function(atfr){
+  PIDC_mat <- as.matrix(GRN(atfr,"pidc"))
+  PIDC_net <- PIDC::matToNet(weightMat = PIDC_mat,methods = "aracne")
+  PIDC_net
+})
+
+
+
+
+
+doro_regulon <- dorothea_regulons$hs_regulons
+doro_regulon <- dfToList(doro_regulon,tf_col = "tf",target_col = "target")
+doro_regulon <- doro_regulon[intersect(row.names(GENIE3_mat),names(doro_regulon))]
+
+get_auc <- function(mat, gene_list){
+  mat <- t(abs(mat))
+  overlap_TFs <- intersect(names(gene_list),colnames(mat))
+  mat <- mat[,overlap_TFs]
+  gene_list <- gene_list[overlap_TFs]
+  cells_rankings <- AUCell::AUCell_buildRankings(exprMat = mat,plotStats = FALSE)
+  cells_AUC <- AUCell::AUCell_calcAUC(geneSets = gene_list,rankings = cells_rankings, normAUC = T)
+  cells_AUC <- assay(cells_AUC)
+  all_out_TFs <- intersect(row.names(cells_AUC),colnames(cells_AUC))
+  cells_AUC <- diag(as.matrix(cells_AUC[all_out_TFs,all_out_TFs]))
+  cells_AUC
+}
+
+
+```
+
+
+#### 2.2 SCENIC
+
+```{r}
+library(GENIE3)
+library(RcisTarget)
+library(AUCell)
+library(data.table)
+
+hs_motifranking <- importRankings("../ext_data/cisTarget_databases/hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+hs_annotation <- fread("../ext_data/cisTarget_databases/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",sep="\t")
+mm_motifranking <- importRankings("../ext_data/cisTarget_databases/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather")
+mm_annotation <- fread("../ext_data/cisTarget_databases/motifs-v8-nr.mgi-m0.001-o0.0.tbl",sep="\t")
+
+drop_ratio <- 0.3
+atfr <- readRDS(paste("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/GRNs/test_grns/atfr_",drop_ratio,"drop_out.rds",sep=""))
+#atfr <- scater::logNormCounts(atfr)
+
+#---get regulons
+exprMatr <- assay(atfr,"logcounts")
+grn_tab <- GRN(atfr,"genie3")
+grn_frm <- GENIE3::getLinkList(as.matrix(grn_tab),threshold = 0)
+top_num <- round(0.05*ncol(grn_tab))
+grn_frm <- grn_frm %>% group_by(regulatoryGene) %>% top_n(top_num,weight)
+grn_list <- split(grn_frm$targetGene,as.character(grn_frm$regulatoryGene))
+
+#---run cistarget
+grn_cistarget_res <- cisTarget(geneSets = grn_list, motifRankings = hs_motifranking, motifAnnot = hs_annotation, highlightTFs=row.names(grn_tab), nesThreshold = 0)
+out_path <- paste("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/performance/test_grn_spear/SCENIC/",drop_ratio,sep="")
+dir.create(path = out_path,recursive = T)
+saveRDS(grn_cistarget_res,file.path(out_path,"grn_cistarget_all.rds"))
+grn_cistarget_res <- readRDS(file.path(out_path,"grn_cistarget_all.rds"))
+grn_cistarget <- grn_cistarget_res[TFinDB %in% c("**","*"),][enrichedGenes!="",]
+
+library(stringr)
+filterTFlists <- function(str){
+  str <- str_replace_all(str, "\\s\\(directAnnotation\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity\\)\\.",";")
+  str <- str_replace_all(str, "\\s\\(inferredBy_MotifSimilarity_n_Orthology\\)\\.",";")
+  str <- str_replace_all(str, "\\;\\s?+$","")
+  str <- str_split(str,pattern = "\\;\\s")
+  str
+}
+grn_cistarget$TF_highConf <- filterTFlists(grn_cistarget$TF_highConf)
+grn_cistarget$TF_lowConf <- filterTFlists(grn_cistarget$TF_lowConf)
+
+grn_cistarget_filter <- grn_cistarget[apply(grn_cistarget,1,function(x){
+  x['geneSet'] %in% unlist(x['TF_highConf']) || x['geneSet'] %in% unlist(x['TF_lowConf'])
+}),]
+grn_cistarget_filter$enrichedGenes <- str_split(grn_cistarget_filter$enrichedGenes,pattern =";")
+grn_regulon <- split(grn_cistarget_filter$enrichedGenes,grn_cistarget_filter$geneSet)
+grn_regulon <- lapply(grn_regulon,function(x){unique(unlist(x))})
+grn_regulon_num <- sapply(grn_regulon,length)
+grn_regulon <- grn_regulon[names(grn_regulon_num[which(grn_regulon_num>4)])]
+saveRDS(grn_regulon, file.path(out_path,"grn_regulon_list.rds"))
+
+#---get expression ranks
+cells_rankings <- AUCell_buildRankings(exprMatr, nCores=1, plotStats=FALSE)
+cells_AUC <- AUCell_calcAUC(geneSets=grn_regulon, rankings = cells_rankings, normAUC = TRUE)
+auc_value <- getAUC(cells_AUC)
+saveRDS(auc_value,file.path(out_path,"AUC_value.rds"))
+#auc <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/CRISPRi/performance/test_grn_spear/SCENIC/DR_0.05/AUC_value.rds")
+
+#------performance
+mat <- auc_value
+
+
+TFs <- row.names(mat)
+col_data <- colData(atfr)
+auroc <- list()
+for(i in TFs){
+  col_data_i <- col_data[col_data$TF %in% c(i,'Scramble'),]
+  prediction <- mat[i,row.names(col_data_i ),drop=TRUE]
+  labels <- col_data_i[names(prediction),"TF"]
+  label <- ifelse(labels=="Scramble",1,-1)
+  pred <- ROCR::prediction(predictions = prediction, labels = label)
+  perf <- ROCR::performance(pred,"auc")
+  auroc[[i]] <- unlist(perf@y.values)
+}
+SCENIC_AUC <- unlist(auroc)
+saveRDS(SCENIC_AUC, file.path(out_path,"each_TF_AUC_value.rds"))
+#PIDC_TF_AUC$SCENIC <- SCENIC_AUC[row.names(PIDC_TF_AUC)]
+
+
+i="SOX17"
+col_data_i <- as.data.frame(colData(atfr)) %>% dplyr::filter(TF %in% c("Scramble", i))
+labels <- col_data_i[['TF']]
+names(labels) <- row.names(col_data_i)
+label <- ifelse(labels=="Scramble",1,-1)
+prediction <- mat[i,names(labels)]
+pred <- ROCR::prediction(predictions = prediction, labels = label)
+perf <- ROCR::performance(pred,"auc")
+perf@y.values
+perf <- ROCR::performance(pred,"tpr", "fpr")
+
+plot(perf,
+     avg="threshold",
+     spread.estimate="boxplot")
+
+
+
+```
+
+
+
+
+

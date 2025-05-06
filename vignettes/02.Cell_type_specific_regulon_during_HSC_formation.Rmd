@@ -1,0 +1,67 @@
+---
+title: "02. Cell-type specific regulon analysis during HSC formation"
+output: html_notebook
+---
+
+#### 1 Introduction
+
+This vignette showed how to calculating the cell-type specific regulons using single-cell RNA sequencing data (Smart-seq2) during HSC formation from Zhou et.al 2018.
+
+##### 1.1 install packages
+
+The scATFR rely on **PIDC** package. So we firstly install these packages.
+```{r}
+install.packages("devtools")
+library(devtools)
+devtools::install_github(repo = "hmutpw/PIDC")
+devtools::install_github(repo = "hmutpw/scATFR")
+```
+
+##### 1.2 loading expression data and create atfr object.
+
+The scATFR accept expression data such as counts, UMIs and TPMs.
+```{r}
+library(scATFR)
+library(PIDC)
+exp_data <- readRDS(system.file("./inst/extdata/mouse_HSC_formation_expression.rds",package = "scATFR"))
+col_metadata <- readRDS(system.file("./inst/extdata/mouse_HSC_formation_colData.rds",package = "scATFR"))
+row.names(col_metadata) <- col_metadata$sample
+atfr <- scATFR(exp_data = exp_data, col_data = col_metadata)
+```
+
+##### 1.3 Inferring gene regulatory network
+
+```{r}
+atfr <- inferGRNs(x = atfr, method="pidc",ncores=6)
+```
+you can get the regulatory network using the following method:
+```{r}
+pidc_mat <- GRN(x = atfr, i = "pidc")
+```
+Also, if you had run you gene regulatory network inferring steps alone, and want to add the network into `atfr` object, you can use `GRN()` methods:
+```{r}
+pidc_mat <- PIDC(expMat = exp_data, ncores = 6)
+GRN(x = atfr,i = "pidc") <- pidc_mat
+```
+
+##### 1.4 Inferring regulons from gene regulatory network
+
+```{r}
+pidc_net <- matToNet(weightMat = pidc_mat,ncores = 6)
+```
+
+#### 2. Integrating the gene regulatory network with local TF-target regulatory information
+
+```{r}
+blood_network <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/TF_Target_data/final_network/mouse/blood_merged_filter_strict_network.txt.gz",sep="\t",header=T)
+
+```
+
+
+
+
+
+
+
+
+

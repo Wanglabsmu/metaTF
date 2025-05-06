@@ -1,0 +1,175 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#### 1.1 load data and creating object
+```{r}
+library(scATFR)
+library(PIDC)
+exp_data <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/exp_data/EHT_iHEC_merged_gene_TPM.txt",sep="\t",header=T,row.names=1)
+col_metadata <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/exp_data/sample2stage.txt",sep="\t",header=T)
+row.names(col_metadata) <- col_metadata$sample
+exp_data_filter <- as.matrix(exp_data[apply(exp_data,1,function(x){length(x[x>0])>=10}),])
+atfr <- scATFR(exp_data = as.matrix(exp_data_filter),col_data = col_metadata)
+atfr <- inferGRNs(x = atfr, method="pidc",ncores=6)
+saveRDS(atfr,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/GRNs/atfr_with_grn.rds")
+PIDC_regulons <- matToNet(weightMat = as.matrix(GRN(atfr)),cutoff=0)  
+saveRDS(PIDC_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/GRNs/pidc_regulons.rds")
+
+#---iHEC regulons
+col_metadata_iHEC <- col_metadata %>% filter(stage %in% c("EC","iHEC","D14_iHSC","D17_iHSC"))
+exp_data_iHEC <- exp_data[,row.names(col_metadata_iHEC)]
+exp_data_iHEC <- as.matrix(exp_data_iHEC[apply(exp_data_iHEC,1,function(x){length(x[x>0])>=5}),])
+atfr_iHEC <- scATFR(exp_data = exp_data_iHEC,col_data = col_metadata_iHEC)
+atfr_iHEC <- inferGRNs(x = atfr_iHEC, method="pidc",ncores=6)
+saveRDS(atfr_iHEC,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/GRNs/atfr_iHEC_with_grn.rds")
+PIDC_iHEC_regulons <- matToNet(weightMat = as.matrix(GRN(atfr_iHEC)),cutoff=0)  
+saveRDS(PIDC_iHEC_regulons,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/GRNs/pidc_iHEC_regulons.rds")
+
+
+```
+
+#### 1.2 expression level analysis
+
+```{r}
+library(scater)
+library(scran)
+atfr <- readRDS("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/GRNs/atfr_with_grn.rds")
+counts_mat <- read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/exp_data/EHT_iHEC_merged_gene_counts.txt",sep="\t",header=T,row.names=1)
+counts_mat <- counts_mat[apply(counts_mat,1,function(x){length(x[x>0])>=10}),]
+atfr <- scATFR(exp_data = expression_matrix,col_data = colData(atfr))
+atfr <- scater::logNormCounts(atfr)
+colData(atfr)$stage <- reLevel(vect = colData(atfr)$stage)
+top.gene <- getTopHVGs(atfr,n = 5000,)
+atfr <- scater::runPCA(x=atfr,subset_row=top.gene) 
+plotReducedDim(atfr, dimred="PCA",colour_by = "stage")
+g <- buildSNNGraph(atfr)
+cluster <- igraph::cluster_walktrap(g)$membership
+colLabels(atfr) <- factor(cluster)
+atfr <- runTSNE(atfr, dimred="PCA")
+plotTSNE(atfr, colour_by="stage", text_by="stage")
+atfr <- runUMAP(x = atfr)
+plotUMAP(atfr, colour_by="stage", text_by="stage")
+
+
+library(pheatmap)
+col_data <- as.data.frame(colData(atfr)[,"stage",drop=FALSE])
+mat <- as.matrix(logcounts(atfr)[top.gene,])
+p <- pheatmap(mat,scale="row",cluster_cols = F,show_rownames = F,treeheight_row = F,
+              clustering_method = "ward.D2",cutree_rows = 8,
+              gaps_col = cumsum(table(col_data$stage)), annotation_col = col_data)
+p
+
+
+
+
+```
+
+#### 1.3 Monocle analysis
+
+```{r}
+#devtools::install_github('cole-trapnell-lab/monocle3')
+library(monocle3)
+gene_counts_tab = read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/exp_data/EHT_iHEC_merged_gene_counts.txt",header=T,row.names=1,check.names=F)
+gene_counts_filter = gene_counts_tab[apply(gene_counts_tab,1,function(x){length(x[x>0])>=10}),]
+sample2stage = read.table("D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/exp_data/sample2stage.txt",header=T,row.names=1,check.names=F)
+iHECs <- sample2stage %>% filter(stage %in% c("EC","iHEC","D14_iHSC","D17_iHSC"))
+gene_counts_filter <- gene_counts_filter[,row.names(iHECs)]
+
+sample2stage$batch <- ifelse(sample2stage$stage %in% c("iHEC","D14_iHSC","D17_iHSC"),"induce","nature")
+mod = model.matrix(~as.factor(stage), data=sample2stage)
+combat_edata <- ComBat(dat = gene_counts_filter,batch = iHECs$batch)
+
+expression_matrix = as.matrix(pbmc@assays$RNA@counts)
+
+
+expression_matrix = as.matrix(gene_counts_filter)
+cell_metadata = sample2stage
+cds <- new_cell_data_set(expression_matrix, cell_metadata = cell_metadata)
+
+######
+#do monocle3
+######
+## Step 1: Normalize and pre-process the data
+cds <- preprocess_cds(cds, num_dim = 50, method = "PCA")
+plot_pc_variance_explained(cds)
+
+## Step 2: Remove batch effects with cell alignment
+cds <- align_cds(cds, preprocess_method = "PCA", alignment_group = "batch")
+
+## Step 3: Reduce the dimensions using UMAP
+cds <- reduce_dimension(cds,reduction_method = "UMAP", preprocess_method = "PCA")
+plot_cells(cds, reduction_method = "UMAP", color_cells_by="stage")
+UMAP_res <- reducedDims(cds)$UMAP
+colnames(UMAP_res) = c("UMAP_1","UMAP_2")
+
+## Step 4: Cluster the cells
+cds <- cluster_cells(cds)
+clusters(cds)
+partitions(cds)
+#cds@clusters@listData$UMAP$partitions = factor(rep(1,length(partitions(cds))))
+#names(cds@clusters@listData$UMAP$partitions) = names(clusters(cds))
+
+plot_cells(cds, color_cells_by = "cluster",show_trajectory_graph = FALSE)
+
+## Step 5: Learn a graph
+cds <- learn_graph(cds,use_partition = FALSE)
+
+## Step 6: Order cells
+cds <- order_cells(cds)
+
+pseudotime_value = cds@principal_graph_aux@listData$UMAP$pseudotime
+plot_cells(cds, color_cells_by = "stage",show_trajectory_graph = TRUE)
+names(sort(pseudotime_value))
+```
+
+#### 1.4 removing batch effect using BEER
+
+```{r}
+source('https://raw.githubusercontent.com/jumphone/BEER/master/BEER.R')
+D1 <- gene_counts_tab[,row.names(sample2stage[sample2stage$batch=="nature",])]
+D2 <- gene_counts_tab[,row.names(sample2stage[sample2stage$batch=="induce",])]
+DATA=.simple_combine(D1,D2)$combine
+BATCH=rep('D2',ncol(DATA))
+BATCH[c(1:ncol(D1))]='D1'
+mybeer=BEER(DATA, BATCH, GNUM=30, PCNUM=50, ROUND=1, GN=2000, SEED=1, COMBAT=TRUE, RMG=NULL)  
+
+PCUSE=mybeer$select
+COL=rep('black',length(mybeer$cor))
+COL[PCUSE]='red'
+plot(mybeer$cor,mybeer$lcor,pch=16,col=COL,
+    xlab='Rank Correlation',ylab='Linear Correlation',xlim=c(0,1),ylim=c(0,1))
+PCUSE=.selectUSE(mybeer, CUTR=0.7, CUTL=0.7, RR=0.5, RL=0.5)
+
+
+#------
+pbmc <- mybeer$seurat
+PCUSE <- mybeer$select
+pbmc <- RunUMAP(object = pbmc, reduction='pca',dims = PCUSE, check_duplicates=FALSE)
+pbmc@meta.data$stage <- factor(sample2stage[row.names(pbmc@meta.data),"stage"],
+                               levels=c("EC","iHEC","T1_pre_HSC","T2_pre_HSC","E12","E14","Adult_HSC","D14_iHSC","D17_iHSC"))
+
+DimPlot(pbmc, reduction='umap', group.by='batch', pt.size=0.1) 
+DimPlot(pbmc, reduction='umap', group.by='stage', pt.size=0.1) 
+VEC=pbmc@reductions$umap@cell.embeddings
+N=20
+set.seed(123)
+K=kmeans(VEC,centers=N)
+
+CLUST=K$cluster
+pbmc@meta.data$clust=as.character(CLUST)
+DimPlot(pbmc, reduction='umap', group.by='stage', pt.size=1,label=TRUE,shape.by = 'batch')
+
+
+mybeer$seurat <- pbmc
+saveRDS(mybeer,"D:/HSC_Autophagy/Markdown/3.scATFR/ext_data/iHEC_EHT/rm_batch/mybeer.rds")
+
+
+
+```
+
+
+
+
+
+
