@@ -6,6 +6,7 @@ Transcription factor regulon (TFR)
 
 ## 1. Overview
 The **metaTF** is an R package used for <u>**s**</u>ingle-<u>**c**</u>ell <u>**A**</u>ctivate <u>**T**</u>ranscription <u>**F**</u>actor <u>**R**</u>egulon analysis, which combining the transcription factor regulatory information with single-cell gene expression data and evaluating the transcription factor regulon activities, identifying cell-type specific regulons and assessing the similarities between regulons and pathways. In fact, **scATFR** was the original name used during the early development phase of what is now known as the metaTF package. To maintain consistency and continuity, we continue to use scATFR as the package name within this software suite.
+For further tutorials on the usage of the scATFR package, you can refer to the HTML documents located in the vignettes folder of the scATFR package. These documents typically include detailed step-by-step instructions and example code, which can help users better understand and grasp the functionality of the package and its applications in biological research.
 <u>**Conda install***</u> 
 
 ```{r}
@@ -76,7 +77,9 @@ atfr <- filterRegulons(x = atfr, gene_list = pidc_grns, use_grn="pidc")
 ```
 Now, we evaluate the regulon activity in each single cell:
 ```{r}
-atfr <- regulonActivity(atfr, method="viper",ncores=6)
+atfr <- regulonActivity(x = atfr,gene_list = pidc_grns, method="viper")
+active_mat <- assay(altExp(atfr,"viper"))
+write.table(active_mat,"./TF_active_mat.txt",sep="\t",quote=F)
 atfr <- regulonUMAP(x = atfr)
 plotRegulonReducedDim(object = atfr, alt_assay = "viper", dimred = "UMAP", colour_by="stage")
 ```
