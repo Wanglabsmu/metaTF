@@ -69,7 +69,10 @@ head(GRN(atfr)[,1:5])
 ```
 After that, we filter the gene regulons using gene regulotory network:
 ```{r}
-atfr <- filterRegulons(x=atfr, ncores=6)
+pidc_net <- PIDC::matToNet(weightMat = as.matrix(GRN(x = atfr,i = "pidc")), methods = "aracne") %>% filter(regulator %in% TF_Symbols$mouse)
+colnames(pidc_net) <- c("tf","target","weight")
+pidc_grns <- dfToList(pidc_net)
+atfr <- filterRegulons(x = atfr, gene_list = pidc_grns, use_grn="pidc")
 ```
 Now, we evaluate the regulon activity in each single cell:
 ```{r}
@@ -120,7 +123,11 @@ Typically, there are four columns in TFRs data:
 ## Case Study
 
 ### 2. CASE1: Characterisation of cell-type specific transcription factor regulons (TFRs) during HSC formation.
-In this case, we firstly performed dimension reduction and pseudotime analysis based on [Monocle3](https://cole-trapnell-lab.github.io/monocle3/) using mouse embryonic hematopoietic stem cells (HSCs) formation data ([Fan zhou, 2016](https://www.nature.com/articles/nature17997) and [Jie Zhou, 2018](https://doi.org/10.1016/j.stem.2018.11.023)). Then, we performed transcription factor regulons (TFRs) analysis such as cell-type specific TFRs identification and TFR-pathway similarity analysis using **metaTF**. Finally, we showed the visualization of the above results.
+In this case, we firstly performed dimension reduction and pseudotime analysis based on [Monocle3](https://cole-trapnell-lab.github.io/monocle3/) using mouse embryonic hematopoietic stem cells (HSCs) formation data ([Fan zhou, 2016](https://www.nature.com/articles/nature17997) and [Jie Zhou, 2018](https://doi.org/10.1016/j.stem.2018.11.023
+        
+        
+        
+        )). Then, we performed transcription factor regulons (TFRs) analysis such as cell-type specific TFRs identification and TFR-pathway similarity analysis using **metaTF**. Finally, we showed the visualization of the above results.
 
 #### 2.1 Pseudotime analysis using monocle3
 
